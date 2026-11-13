@@ -52,8 +52,9 @@
   .ago { text-align: right; min-width: 64px; }
   .ago b { display: block; font-size: 24px; line-height: 1; color: var(--c, var(--fresh)); }
   .ago span { font-size: 12px; color: var(--muted); }
-  .done-btn { padding: 9px 11px; border-radius: 12px; background: var(--accent-soft); color: var(--accent);
-    font-size: 14px; font-weight: 600; white-space: nowrap; }
+  .done-btn { position: relative; padding: 5px 7px; border-radius: 7px; background: transparent; color: #72685f;
+    font-size: 12px; line-height: 16px; font-weight: 400; white-space: nowrap; }
+  .done-btn::after { content: ''; position: absolute; inset: -9px 0; }
 
   .empty { text-align: center; color: var(--muted); padding: 60px 20px; line-height: 1.5; }
   .empty b { display: block; font-size: 40px; margin-bottom: 8px; }
