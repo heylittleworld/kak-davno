@@ -1,5 +1,5 @@
 // При изменении файлов приложения увеличь номер версии — так iPhone подтянет обновление.
-const CACHE = 'kak-davno-v2';
+const CACHE = 'kak-davno-v3';
 const FILES = ['./', 'index.html', 'manifest.json', 'icon-192.png', 'icon-512.png'];
 
 self.addEventListener('install', e => {

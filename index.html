@@ -133,6 +133,22 @@
     opacity: 0; pointer-events: none; }
   .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; pointer-events: auto; }
   .toast button { color: #ffc9a8; font-weight: 600; }
+  button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
+  button.card-main { text-align: left; padding: 0; }
+  .sheet-close { float: right; font-size: 24px; padding: 0 8px; }
+  .stats-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
+  .metric { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
+  .metric b { display: block; font-size: 20px; }
+  .metric span { color: var(--muted); font-size: 13px; }
+  .chart { margin: 12px 0 18px; }
+  .chart-row { display: grid; grid-template-columns: 70px 1fr 30px; gap: 8px; align-items: center; margin: 8px 0; font-size: 13px; }
+  .bar-track { background: var(--line); border-radius: 4px; height: 16px; }
+  .bar { background: var(--accent); border-radius: 4px; height: 100%; }
+  .entry-actions { display: flex; gap: 4px; }
+  .edit-entry { font-size: 13px; color: var(--accent); padding: 8px; }
+  .hist li > span { overflow-wrap: anywhere; min-width: 0; }
+  .hist li small { display: block; margin: 3px 0 0; }
+  @media (max-width: 380px) { .card { flex-wrap: wrap; } .done-btn { margin-left: auto; } }
 </style>
 </head>
 <body>
@@ -144,14 +160,15 @@
 
 <div class="tabs">
   <div class="seg">
-    <button id="tabList" class="on">Список</button>
-    <button id="tabCal">Календарь</button>
+    <button id="tabList" class="on" aria-pressed="true">Список</button>
+    <button id="tabCal" aria-pressed="false">Календарь</button>
+    <button id="tabArchive" aria-pressed="false">Архив</button>
   </div>
 </div>
 
 <div id="listView">
   <div class="search" id="searchWrap" hidden>
-    <input id="search" type="search" placeholder="Найти дело…" autocomplete="off">
+    <input id="search" type="search" placeholder="Найти дело…" aria-label="Найти дело" autocomplete="off">
   </div>
   <main id="list"></main>
 </div>
@@ -162,7 +179,7 @@
     <h3 id="monthTitle"></h3>
     <button id="nextM" aria-label="Следующий месяц">›</button>
   </div>
-  <select class="filter" id="calFilter"></select>
+  <select class="filter" id="calFilter" aria-label="Фильтр по делу"></select>
   <div class="grid" id="calGrid"></div>
   <div class="day-panel" id="dayPanel"></div>
 </section>
@@ -174,12 +191,12 @@
 <!-- Добавление -->
 <div class="sheet" id="addSheet">
   <div class="grab"></div>
-  <h2>Что сделала?</h2>
+  <h2 id="addTitle">Что сделала?</h2>
   <label for="nameInput">Дело</label>
   <input class="field" id="nameInput" placeholder="Например: помыла холодильник" autocomplete="off" enterkeyhint="done">
   <div class="chips" id="suggest"></div>
   <div class="hint" id="nameHint"></div>
-  <label>Когда</label>
+  <label for="dateInput">Когда</label>
   <div class="date-row">
     <button class="chip" data-shift="0">Сегодня</button>
     <button class="chip" data-shift="1">Вчера</button>
@@ -194,8 +211,15 @@
   <div class="grab"></div>
   <h2 id="histTitle"></h2>
   <div class="stat" id="histStat"></div>
+  <div id="taskStats"></div>
+  <label for="intervalInput">Желаемый интервал, дней</label>
+  <input class="field" id="intervalInput" type="number" min="1" max="36500" step="1" placeholder="Не задан">
+  <div class="hint">Оставь пустым, если у дела нет расписания. Цвет карточки будет учитывать этот интервал.</div>
+  <button class="secondary" id="saveIntervalBtn">Сохранить интервал</button>
+  <h3>История</h3>
   <ul class="hist" id="histList"></ul>
   <button class="secondary" id="renameBtn">Переименовать</button>
+  <button class="secondary" id="archiveBtn">В архив</button>
   <button class="secondary danger" id="deleteTaskBtn">Удалить дело целиком</button>
 </div>
 
@@ -204,12 +228,13 @@
   <div class="grab"></div>
   <h2>Резервная копия</h2>
   <div class="stat">Записи хранятся на этом устройстве. Время от времени сохраняй копию в файл, чтобы ничего не потерять.</div>
+  <div class="hint">Копия включает историю, архив и интервалы. При загрузке записи объединяются; настройки уже существующих дел остаются прежними.</div>
   <button class="secondary" id="exportBtn">Сохранить копию в файл</button>
   <button class="secondary" id="importBtn">Загрузить из файла</button>
   <input type="file" id="importFile" accept=".json,application/json" hidden>
 </div>
 
-<div class="toast" id="toast"><span id="toastText"></span><button id="toastUndo">Отменить</button></div>
+<div class="toast" id="toast" role="status" inert><span id="toastText"></span><button id="toastUndo">Отменить</button></div>
 
 <script>
 (() => {
@@ -217,9 +242,27 @@
   const $ = id => document.getElementById(id);
 
   // ---------- данные ----------
-  let entries = [];
-  try { entries = JSON.parse(localStorage.getItem(KEY) || '{}').entries || []; } catch (e) { entries = []; }
-  const save = () => { try { localStorage.setItem(KEY, JSON.stringify({ entries })); } catch (e) { alert('Не удалось сохранить: ' + e.message); } };
+  let entries = [], taskSettings = Object.create(null), storageBlocked = false, persisted;
+  // Сначала сохраняем, затем подтверждаем действие. При ошибке возвращаем данные в памяти.
+  const snapshot = () => JSON.stringify({ version: 2, entries, taskSettings });
+  const restore = json => {
+    const data = JSON.parse(json);
+    entries = data.entries;
+    taskSettings = Object.assign(Object.create(null), data.taskSettings);
+  };
+  const save = () => {
+    try {
+      if (storageBlocked) throw new Error('Исходные данные не удалось прочитать. Сначала сохрани их копию в настройках и восстанови данные из исправного файла.');
+      const next = snapshot();
+      localStorage.setItem(KEY, next);
+      persisted = next;
+      return true;
+    } catch (e) {
+      restore(persisted);
+      alert('Изменение не сохранено: ' + e.message);
+      return false;
+    }
+  };
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   const norm = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/ё/g, 'е');
   const clean = s => s.trim().replace(/\s+/g, ' ');
@@ -228,9 +271,11 @@
   const pad = n => String(n).padStart(2, '0');
   const toISO = d => `${d.getFullYear()}-${pad(d.getMonth() + 1)}-${pad(d.getDate())}`;
   const fromISO = s => { const [y, m, d] = s.split('-').map(Number); return new Date(y, m - 1, d); };
+  const validDate = s => typeof s === 'string' && /^\d{4}-\d{2}-\d{2}$/.test(s) && Number(s.slice(0, 4)) >= 1000 && toISO(fromISO(s)) === s;
+  const dayNumber = iso => { const [y, m, d] = iso.split('-').map(Number); return Date.UTC(y, m - 1, d) / 86400000; };
   const today = () => { const d = new Date(); d.setHours(0, 0, 0, 0); return d; };
   const shiftDays = n => { const d = today(); d.setDate(d.getDate() - n); return toISO(d); };
-  const daysSince = iso => Math.round((today() - fromISO(iso)) / 86400000);
+  const daysSince = iso => dayNumber(toISO(today())) - dayNumber(iso);
   const MONTHS = ['янв', 'фев', 'мар', 'апр', 'мая', 'июн', 'июл', 'авг', 'сен', 'окт', 'ноя', 'дек'];
   const fmtDate = iso => { const d = fromISO(iso); const y = d.getFullYear() !== new Date().getFullYear() ? ' ' + d.getFullYear() : ''; return `${d.getDate()} ${MONTHS[d.getMonth()]}${y}`; };
 
@@ -248,10 +293,46 @@
     if (days === 1) return ['вчера', ''];
     if (days < 31) return [days, plural(days, 'день', 'дня', 'дней')];
     if (days < 365) { const m = Math.floor(days / 30.44); return [m, plural(m, 'месяц', 'месяца', 'месяцев')]; }
-    const y = Math.floor(days / 365.25); return [y, plural(y, 'год', 'года', 'лет')];
+    const y = Math.max(1, Math.floor(days / 365.25)); return [y, plural(y, 'год', 'года', 'лет')];
   }
   // мягкая подсветка: свежее — зелёное, давнее — тёплое
-  const ageColor = d => d <= 7 ? 'var(--fresh)' : d <= 30 ? 'var(--mid)' : 'var(--old)';
+  const ageColor = (d, interval) => interval
+    ? d < interval ? 'var(--fresh)' : d === interval ? 'var(--mid)' : 'var(--old)'
+    : d <= 7 ? 'var(--fresh)' : d <= 30 ? 'var(--mid)' : 'var(--old)';
+
+  function validateData(data) {
+    if (!data || !Array.isArray(data.entries)) throw new Error('Ожидается файл со списком записей.');
+    if (data.app !== undefined && data.app !== 'kak-davno') throw new Error('Это файл другого приложения.');
+    if (data.version !== undefined && ![1, 2].includes(data.version)) throw new Error('Версия файла не поддерживается.');
+    const ids = new Set();
+    const checked = data.entries.map(e => {
+      if (!e || typeof e.name !== 'string' || !clean(e.name) || !validDate(e.date) || e.date > toISO(today())) throw new Error('Есть запись с неверным названием или датой. Будущие даты не поддерживаются.');
+      if (e.id !== undefined && (typeof e.id !== 'string' || !e.id.trim())) throw new Error('Неверный идентификатор записи.');
+      const id = e.id || uid();
+      if (ids.has(id)) throw new Error('В файле повторяются идентификаторы записей.');
+      ids.add(id);
+      if (e.created !== undefined && (typeof e.created !== 'number' || !Number.isFinite(e.created) || e.created < 0)) throw new Error('Неверное время создания записи.');
+      return { id, name: clean(e.name), date: e.date, created: e.created ?? Date.now() };
+    });
+    const settings = Object.create(null);
+    if (data.taskSettings !== undefined) {
+      if (!data.taskSettings || typeof data.taskSettings !== 'object' || Array.isArray(data.taskSettings)) throw new Error('Неверные настройки дел.');
+      for (const [key, value] of Object.entries(data.taskSettings)) {
+        if (!value || typeof value !== 'object' || (value.archived !== undefined && typeof value.archived !== 'boolean') || (value.interval != null && (!Number.isInteger(value.interval) || value.interval < 1 || value.interval > 36500))) throw new Error('Неверный интервал или состояние архива.');
+        settings[norm(key)] = { archived: value.archived === true, interval: value.interval ?? null };
+      }
+    }
+    return { entries: checked, taskSettings: settings };
+  }
+  try {
+    const raw = localStorage.getItem(KEY);
+    const data = raw === null ? { entries: [], taskSettings: Object.create(null) } : validateData(JSON.parse(raw));
+    entries = data.entries; taskSettings = data.taskSettings;
+  } catch (e) {
+    storageBlocked = true;
+    alert('Не удалось прочитать сохранённые данные. Они не перезаписаны. В настройках можно скачать исходную копию и загрузить исправный файл.');
+  }
+  persisted = snapshot();
 
   // ---------- группировка ----------
   function tasks() {
@@ -266,6 +347,7 @@
       t.list.sort((a, b) => b.date.localeCompare(a.date) || b.created - a.created);
       t.last = t.list[0];
       t.name = t.last.name;
+      t.settings = taskSettings[t.key] || { archived: false, interval: null };
     }
     // сверху то, что делалось давнее всего
     out.sort((a, b) => a.last.date.localeCompare(b.last.date) || a.name.localeCompare(b.name, 'ru'));
@@ -279,11 +361,12 @@
   function render() { renderList(); renderCal(); }
 
   function renderList() {
-    const all = tasks();
-    $('searchWrap').hidden = all.length < 8;
+    const all = tasks().filter(t => Boolean(t.settings.archived) === (view === 'archive'));
+    $('searchWrap').hidden = !all.length && !$('search').value;
     const q = norm($('search').value || '');
     const list = q ? all.filter(t => t.key.includes(q)) : all;
     if (!all.length) {
+      if (view === 'archive') { $('list').innerHTML = '<div class="empty">В архиве пока нет дел.<br>Перенеси сюда неактуальное дело из его истории.</div>'; return; }
       $('list').innerHTML = `<div class="empty"><b>🗓</b>Пока пусто.<br>Нажми «Записать» и добавь первое дело —<br>например, «помыла голову».</div>`;
       return;
     }
@@ -292,13 +375,15 @@
       const d = daysSince(t.last.date);
       const [big, small] = agoParts(d);
       const n = t.list.length;
-      return `<div class="card" style="--c:${ageColor(d)}" data-key="${esc(t.key)}">
-        <div class="card-main" data-open>
+      const interval = t.settings.interval;
+      const schedule = interval ? (d < interval ? `до следующего раза ${interval - d} дн.` : d === interval ? 'пора повторить' : `на ${d - interval} дн. позже интервала`) : '';
+      return `<div class="card" style="--c:${ageColor(d, interval)}" data-key="${esc(t.key)}">
+        <button class="card-main" data-open aria-label="${esc('История и статистика: ' + t.name)}">
           <p class="card-name">${esc(t.name)}</p>
-          <div class="card-sub">${fmtDate(t.last.date)} · ${n} ${plural(n, 'раз', 'раза', 'раз')}</div>
-        </div>
+          <div class="card-sub">${fmtDate(t.last.date)} · ${n} ${plural(n, 'раз', 'раза', 'раз')}${schedule ? '<br>' + schedule : ''}</div>
+        </button>
         <div class="ago" data-open><b style="${typeof big === 'string' ? 'font-size:17px' : ''}">${big}</b><span>${small}</span></div>
-        <button class="done-btn" data-done>✓ Сегодня</button>
+        ${t.settings.archived ? '' : '<button class="done-btn" data-done>✓ Сегодня</button>'}
       </div>`;
     }).join('');
   }
@@ -308,7 +393,7 @@
     const t = findTask(card.dataset.key); if (!t) return;
     if (e.target.closest('[data-done]')) {
       const entry = { id: uid(), name: t.name, date: toISO(today()), created: Date.now() };
-      entries.push(entry); save(); render();
+      entries.push(entry); if (!save()) return; render();
       toast(`«${t.name}» — отмечено сегодня`, () => { entries = entries.filter(x => x.id !== entry.id); save(); render(); });
     } else if (e.target.closest('[data-open]')) {
       openHistory(t.key);
@@ -318,8 +403,41 @@
 
   // ---------- шторки ----------
   let openSheet = null;
-  function open(id) { close(); $('toast').classList.remove('show'); openSheet = $(id); $('overlay').classList.add('open'); openSheet.classList.add('open'); }
-  function close() { if (openSheet) openSheet.classList.remove('open'); $('overlay').classList.remove('open'); openSheet = null; }
+  let returnFocus = null;
+  const sheets = [...document.querySelectorAll('.sheet')];
+  for (const sheet of sheets) {
+    sheet.setAttribute('role', 'dialog'); sheet.setAttribute('aria-modal', 'true'); sheet.inert = true;
+    const heading = sheet.querySelector('h2');
+    if (!heading.id) heading.id = sheet.id + 'Title';
+    sheet.setAttribute('aria-labelledby', heading.id);
+    const button = document.createElement('button');
+    button.className = 'sheet-close'; button.textContent = '×'; button.setAttribute('aria-label', 'Закрыть');
+    button.addEventListener('click', close); sheet.prepend(button);
+  }
+  function open(id) {
+    const previousFocus = openSheet ? returnFocus : document.activeElement;
+    close(false); returnFocus = previousFocus;
+    $('toast').classList.remove('show'); $('toast').inert = true; openSheet = $(id); openSheet.inert = false;
+    $('overlay').classList.add('open'); openSheet.classList.add('open');
+    [...document.body.children].forEach(el => { if (!el.classList.contains('sheet') && el.id !== 'overlay' && el.id !== 'toast') el.inert = true; });
+    openSheet.querySelector('button, input').focus();
+  }
+  function close(restoreFocus = true) {
+    if (openSheet) { openSheet.classList.remove('open'); openSheet.inert = true; }
+    $('overlay').classList.remove('open'); openSheet = null;
+    [...document.body.children].forEach(el => { if (!el.classList.contains('sheet') && el.id !== 'toast') el.inert = false; });
+    if (restoreFocus && returnFocus) (returnFocus.isConnected ? returnFocus : $(view === 'archive' ? 'tabArchive' : 'addBtn')).focus();
+  }
+  document.addEventListener('keydown', e => {
+    if (!openSheet) return;
+    if (e.key === 'Escape') { e.preventDefault(); close(); }
+    if (e.key === 'Tab') {
+      const focusable = [...openSheet.querySelectorAll('button, input, select, [tabindex="0"]'), ...(!$('toast').inert ? $('toast').querySelectorAll('button') : [])].filter(el => !el.disabled && !el.hidden && el.getClientRects().length);
+      const first = focusable[0], last = focusable[focusable.length - 1];
+      if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
+      else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
+    }
+  });
   $('overlay').addEventListener('click', close);
 
   // ---------- добавление ----------
@@ -338,11 +456,15 @@
       : dv && dv < exact.last.date
         ? `Уже есть — последний раз ${fmtDate(exact.last.date)}. Эта дата раньше, она добавится в историю, отсчёт не изменится.`
         : `Уже есть — последний раз ${fmtDate(exact.last.date)}. Отсчёт начнётся заново.`;
-    $('saveBtn').disabled = !v || !$('dateInput').value;
+    $('saveBtn').disabled = !v || !validDate(dv) || dv > toISO(today());
+    if (editingId) { $('suggest').innerHTML = ''; $('nameHint').textContent = 'Изменится только дата этой записи.'; }
   }
+  let editingId = null;
   function openAdd(iso, name = '') {
+    editingId = null; $('addTitle').textContent = 'Что сделала?'; $('nameInput').disabled = false;
+    $('dateInput').max = toISO(today());
     $('nameInput').value = name; setDate(iso); refreshSuggest(); open('addSheet');
-    if (!name) setTimeout(() => $('nameInput').focus(), 250);
+    if (!name) setTimeout(() => { if (openSheet === $('addSheet')) $('nameInput').focus(); }, 250);
   }
   $('addBtn').addEventListener('click', () => {
     // в календаре — на выбранный день, в списке — на сегодня
@@ -362,38 +484,87 @@
   $('dateInput').addEventListener('change', () => { setDate($('dateInput').value); refreshSuggest(); });
   $('saveBtn').addEventListener('click', () => {
     const raw = clean($('nameInput').value), date = $('dateInput').value;
-    if (!raw || !date) return;
+    if (!raw || !validDate(date) || date > toISO(today())) return;
+    if (editingId) {
+      const entry = entries.find(e => e.id === editingId); if (!entry) return;
+      const previousDate = entry.date; entry.date = date;
+      if (!save()) return;
+      render(); openHistory(norm(entry.name));
+      toast('Дата изменена', () => { const current = entries.find(e => e.id === entry.id); if (current) current.date = previousDate; save(); render(); fillHistory(); });
+      return;
+    }
     const existing = findTask(norm(raw));
     const entry = { id: uid(), name: existing ? existing.name : raw, date, created: Date.now() };
-    entries.push(entry); save(); close(); render();
+    entries.push(entry); if (!save()) return; close(); render();
     toast(`Записано: «${entry.name}»`, () => { entries = entries.filter(x => x.id !== entry.id); save(); render(); });
   });
 
   // ---------- история ----------
   let histKey = null;
   function openHistory(key) { histKey = key; fillHistory(); open('histSheet'); }
+  function statistics(list, now = today()) {
+    const dates = [...new Set(list.map(e => e.date))].sort();
+    const gaps = dates.slice(1).map((date, i) => dayNumber(date) - dayNumber(dates[i])).sort((a, b) => a - b);
+    const middle = Math.floor(gaps.length / 2);
+    const median = gaps.length ? (gaps.length % 2 ? gaps[middle] : (gaps[middle - 1] + gaps[middle]) / 2) : null;
+    const months = Array.from({ length: 6 }, (_, i) => {
+      const date = new Date(now.getFullYear(), now.getMonth() - 5 + i, 1);
+      const prefix = toISO(date).slice(0, 7);
+      return { label: `${MONTHS[date.getMonth()]} ${date.getFullYear()}`, count: list.filter(e => e.date.startsWith(prefix)).length };
+    });
+    return { days: dates.length, median, months, currentMonth: months[5].count };
+  }
   function fillHistory() {
     const t = findTask(histKey); if (!t) { close(); render(); return; }
     $('histTitle').textContent = t.name;
-    const dates = t.list.map(e => e.date);
-    let stat = `${t.list.length} ${plural(t.list.length, 'раз', 'раза', 'раз')}`;
-    if (dates.length > 1) {
-      const gaps = []; for (let i = 0; i < dates.length - 1; i++) gaps.push((fromISO(dates[i]) - fromISO(dates[i + 1])) / 86400000);
-      const avg = Math.round(gaps.reduce((a, b) => a + b, 0) / gaps.length);
-      stat += ` · в среднем раз в ${avg} ${plural(avg, 'день', 'дня', 'дней')}`;
-    }
-    $('histStat').textContent = stat;
+    const stats = statistics(t.list);
+    $('histStat').textContent = t.settings.archived ? 'В архиве · история сохранена' : 'История и статистика дела';
+    $('intervalInput').value = t.settings.interval ?? '';
+    $('archiveBtn').textContent = t.settings.archived ? 'Вернуть из архива' : 'В архив';
+    const maxCount = Math.max(1, ...stats.months.map(m => m.count));
+    $('taskStats').innerHTML = `<div class="stats-grid">
+      <div class="metric"><b>${t.list.length}</b><span>выполнений за всё время</span></div>
+      <div class="metric"><b>${stats.days}</b><span>дней активности</span></div>
+      <div class="metric"><b>${stats.currentMonth}</b><span>выполнений в этом месяце</span></div>
+      <div class="metric"><b>${stats.days < 3 ? '—' : stats.median.toLocaleString('ru') + ' дн.'}</b><span>типичный интервал</span></div>
+    </div><div class="hint">${stats.days < 3 ? 'Для типичного интервала пока мало данных: нужно хотя бы три разных дня выполнения. ' : ''}Интервал — медиана промежутков между днями выполнения. Несколько отметок за день считаются отдельными выполнениями.</div>
+    <h3>Выполнения за 6 месяцев</h3><div class="chart" role="img" aria-label="${esc(stats.months.map(m => m.label + ': ' + m.count).join('; '))}">${stats.months.map(m => `<div class="chart-row" aria-hidden="true"><span>${m.label}</span><div class="bar-track"><div class="bar" style="width:${m.count / maxCount * 100}%"></div></div><b>${m.count}</b></div>`).join('')}</div>`;
     $('histList').innerHTML = t.list.map(e => {
       const d = daysSince(e.date);
       const ago = d === 0 ? 'сегодня' : d === 1 ? 'вчера' : d > 0 ? `${d} ${plural(d, 'день', 'дня', 'дней')} назад` : '';
-      return `<li><span>${fmtDate(e.date)}<small>${ago}</small></span><button class="del" data-id="${e.id}" aria-label="Удалить">×</button></li>`;
+      return `<li><span>${fmtDate(e.date)}<small>${ago}</small></span><div class="entry-actions"><button class="edit-entry" data-edit="${esc(e.id)}" aria-label="${esc('Изменить дату ' + fmtDate(e.date))}">Изменить</button><button class="del" data-id="${esc(e.id)}" aria-label="${esc('Удалить запись за ' + fmtDate(e.date))}">×</button></div></li>`;
     }).join('');
   }
   $('histList').addEventListener('click', e => {
+    const edit = e.target.closest('[data-edit]');
+    if (edit) {
+      const entry = entries.find(x => x.id === edit.dataset.edit); if (!entry) return;
+      openAdd(entry.date, entry.name); editingId = entry.id;
+      $('addTitle').textContent = 'Изменить дату'; $('nameInput').disabled = true;
+      $('suggest').innerHTML = ''; $('nameHint').textContent = 'Изменится только дата этой записи.';
+      $('dateInput').focus(); return;
+    }
     const b = e.target.closest('[data-id]'); if (!b) return;
     const removed = entries.find(x => x.id === b.dataset.id);
-    entries = entries.filter(x => x.id !== b.dataset.id); save(); render(); fillHistory();
+    entries = entries.filter(x => x.id !== b.dataset.id); if (!save()) return; render(); fillHistory();
     toast('Запись удалена', () => { entries.push(removed); save(); render(); if (histKey) fillHistory(); });
+  });
+  $('saveIntervalBtn').addEventListener('click', () => {
+    const t = findTask(histKey); if (!t) return;
+    const raw = $('intervalInput').value;
+    const interval = raw === '' ? null : Number(raw);
+    if (interval !== null && (!Number.isInteger(interval) || interval < 1 || interval > 36500)) { alert('Укажи целое число дней от 1 до 36500 или оставь поле пустым.'); return; }
+    taskSettings[t.key] = { ...t.settings, interval };
+    if (!save()) return;
+    render(); fillHistory(); toast('Интервал сохранён');
+  });
+  $('archiveBtn').addEventListener('click', () => {
+    const t = findTask(histKey); if (!t) return;
+    const before = { ...t.settings };
+    taskSettings[t.key] = { ...before, archived: !before.archived };
+    if (!save()) return;
+    close(); render();
+    toast(before.archived ? 'Дело возвращено из архива' : 'Дело в архиве. История сохранена.', () => { taskSettings[t.key] = before; save(); render(); });
   });
   $('renameBtn').addEventListener('click', () => {
     const t = findTask(histKey); if (!t) return;
@@ -402,15 +573,21 @@
     const target = findTask(norm(name));
     if (target && target.key !== t.key && !confirm(`Дело «${target.name}» уже есть. Объединить записи?`)) return;
     const finalName = target && target.key !== t.key ? target.name : name;
+    const newKey = norm(finalName);
+    if (newKey !== t.key) {
+      taskSettings[newKey] = { ...(target ? target.settings : t.settings) };
+      delete taskSettings[t.key];
+    }
     entries.forEach(e => { if (norm(e.name) === t.key) e.name = finalName; });
-    save(); histKey = norm(finalName); render(); fillHistory();
+    if (!save()) return; histKey = newKey; render(); fillHistory();
   });
   $('deleteTaskBtn').addEventListener('click', () => {
     const t = findTask(histKey); if (!t) return;
     if (!confirm(`Удалить «${t.name}» и все ${t.list.length} ${plural(t.list.length, 'запись', 'записи', 'записей')}?`)) return;
     const removed = entries.filter(e => norm(e.name) === t.key);
-    entries = entries.filter(e => norm(e.name) !== t.key); save(); close(); render();
-    toast(`«${t.name}» удалено`, () => { entries.push(...removed); save(); render(); });
+    const settings = { ...t.settings }; delete taskSettings[t.key];
+    entries = entries.filter(e => norm(e.name) !== t.key); if (!save()) return; close(); render();
+    toast(`«${t.name}» удалено`, () => { entries.push(...removed); taskSettings[t.key] = settings; save(); render(); });
   });
 
   // ---------- календарь ----------
@@ -429,19 +606,24 @@
     view = v;
     $('tabList').classList.toggle('on', v === 'list');
     $('tabCal').classList.toggle('on', v === 'cal');
-    $('listView').hidden = v !== 'list';
+    $('tabArchive').classList.toggle('on', v === 'archive');
+    for (const [id, selected] of [['tabList', v === 'list'], ['tabCal', v === 'cal'], ['tabArchive', v === 'archive']]) $(id).setAttribute('aria-pressed', String(selected));
+    $('listView').hidden = v === 'cal';
     $('cal').hidden = v !== 'cal';
+    $('addBtn').hidden = v === 'archive';
+    $('search').value = '';
     render();
   }
   $('tabList').addEventListener('click', () => setView('list'));
   $('tabCal').addEventListener('click', () => setView('cal'));
+  $('tabArchive').addEventListener('click', () => setView('archive'));
 
   function renderCal() {
     if (view !== 'cal') return;
     const all = tasks().slice().sort((a, b) => a.name.localeCompare(b.name, 'ru'));
     if (calFilter && !all.some(t => t.key === calFilter)) calFilter = '';
     $('calFilter').innerHTML = `<option value="">Все дела</option>` +
-      all.map(t => `<option value="${esc(t.key)}"${t.key === calFilter ? ' selected' : ''}>${esc(t.name)}</option>`).join('');
+      all.map(t => `<option value="${esc(t.key)}"${t.key === calFilter ? ' selected' : ''}>${esc(t.name)}${t.settings.archived ? ' (архив)' : ''}</option>`).join('');
 
     // записи по дням
     const byDay = new Map();
@@ -470,7 +652,7 @@
         const keys = [...new Set(list.map(e => norm(e.name)))];
         marks = `<div class="dots">${keys.slice(0, 4).map(k => `<span class="dot" style="background:${colorOf(k)}"></span>`).join('')}${keys.length > 4 ? `<span class="more">+${keys.length - 4}</span>` : ''}</div>`;
       }
-      html += `<button class="${cls.join(' ')}" data-day="${iso}"><span class="num">${d}</span>${marks}</button>`;
+      html += `<button class="${cls.join(' ')}" data-day="${iso}" aria-label="${d} ${MONTHS_GEN[m]} ${y}: выполнений ${list.length}" aria-pressed="${iso === selDay}"><span class="num">${d}</span>${marks}</button>`;
     }
     $('calGrid').innerHTML = html;
 
@@ -479,13 +661,13 @@
     const dayList = (byDay.get(selDay) || []).slice().sort((a, b) => a.name.localeCompare(b.name, 'ru'));
     let panel = `<h4>${sd.getDate()} ${MONTHS_GEN[sd.getMonth()]}, ${WD_FULL[sd.getDay()]}</h4>`;
     panel += dayList.length
-      ? `<ul class="hist">${dayList.map(e => `<li><span><span class="tag" style="background:${colorOf(norm(e.name))}"></span>${esc(e.name)}</span><button class="del" data-id="${e.id}" aria-label="Удалить">×</button></li>`).join('')}</ul>`
+      ? `<ul class="hist">${dayList.map(e => `<li><span><span class="tag" style="background:${colorOf(norm(e.name))}"></span>${esc(e.name)}</span><button class="del" data-id="${esc(e.id)}" aria-label="${esc('Удалить запись: ' + e.name)}">×</button></li>`).join('')}</ul>`
       : `<div class="muted">В этот день ничего не записано</div>`;
     if (calFilter) {
       const prefix = `${y}-${pad(m + 1)}`;
-      const inMonth = [...byDay.keys()].filter(k => k.startsWith(prefix)).length;
-      const monthPrep = MONTHS_GEN[m].slice(0, -1) + 'е';   // ноября → ноябре
-      panel += `<div class="muted">«${esc(findTask(calFilter).name)}» в ${monthPrep}: ${inMonth} ${plural(inMonth, 'раз', 'раза', 'раз')}</div>`;
+      const monthDays = [...byDay.keys()].filter(k => k.startsWith(prefix));
+      const count = monthDays.reduce((sum, day) => sum + byDay.get(day).length, 0);
+      panel += `<div class="muted">«${esc(findTask(calFilter).name)}» · ${MONTH_NAMES[m]} ${y}: выполнений — ${count}, дней активности — ${monthDays.length}</div>`;
     }
     $('dayPanel').innerHTML = panel;
   }
@@ -513,14 +695,18 @@
   $('dayPanel').addEventListener('click', e => {
     const b = e.target.closest('[data-id]'); if (!b) return;
     const removed = entries.find(x => x.id === b.dataset.id);
-    entries = entries.filter(x => x.id !== b.dataset.id); save(); render();
+    entries = entries.filter(x => x.id !== b.dataset.id); if (!save()) return; render();
     toast('Запись удалена', () => { entries.push(removed); save(); render(); });
   });
 
   // ---------- резервная копия ----------
   $('settingsBtn').addEventListener('click', () => open('setSheet'));
   $('exportBtn').addEventListener('click', async () => {
-    const json = JSON.stringify({ app: 'kak-davno', version: 1, exported: new Date().toISOString(), entries }, null, 2);
+    let json;
+    try {
+      json = storageBlocked ? localStorage.getItem(KEY) : JSON.stringify({ app: 'kak-davno', version: 2, exported: new Date().toISOString(), entries, taskSettings }, null, 2);
+      if (json === null) throw new Error('Сохранённые данные недоступны.');
+    } catch (e) { alert('Не удалось создать копию: ' + e.message); return; }
     const fname = `kak-davno-${toISO(today())}.json`;
     const file = new File([json], fname, { type: 'application/json' });
     try {
@@ -533,13 +719,22 @@
   $('importFile').addEventListener('change', async e => {
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
     try {
-      const data = JSON.parse(await f.text());
-      const list = (data.entries || []).filter(x => x && x.name && /^\d{4}-\d{2}-\d{2}$/.test(x.date));
-      if (!list.length) { alert('В файле нет записей'); return; }
-      const ids = new Set(entries.map(x => x.id));
-      const add = list.filter(x => !ids.has(x.id)).map(x => ({ id: x.id || uid(), name: clean(x.name), date: x.date, created: x.created || Date.now() }));
-      entries.push(...add); save(); close(); render();
-      alert(`Добавлено записей: ${add.length}` + (add.length < list.length ? ` (ещё ${list.length - add.length} уже были)` : ''));
+      const data = validateData(JSON.parse(await f.text()));
+      const list = data.entries;
+      if (storageBlocked && !confirm('Заменить непрочитанные данные этим файлом? Перед продолжением сохрани исходную копию.')) return;
+      const ids = new Map(entries.map(x => [x.id, x]));
+      for (const entry of list) {
+        const existing = ids.get(entry.id);
+        if (existing && (existing.name !== entry.name || existing.date !== entry.date)) throw new Error('Один идентификатор относится к разным записям. Импорт отменён, данные не изменены.');
+      }
+      const add = list.filter(x => !ids.has(x.id));
+      const knownTasks = new Set(entries.map(x => norm(x.name)));
+      for (const [key, value] of Object.entries(data.taskSettings)) if (!knownTasks.has(key)) taskSettings[key] = value;
+      entries.push(...add);
+      const wasBlocked = storageBlocked; storageBlocked = false;
+      if (!save()) { storageBlocked = wasBlocked; return; }
+      close(); render();
+      alert(`Добавлено записей: ${add.length}. Уже были: ${list.length - add.length}. Настройки существующих дел сохранены.`);
     } catch (err) { alert('Не получилось прочитать файл: ' + err.message); }
   });
 
@@ -548,10 +743,10 @@
   function toast(text, undo) {
     $('toastText').textContent = text; undoFn = undo;
     $('toastUndo').style.display = undo ? '' : 'none';
-    $('toast').classList.add('show'); clearTimeout(toastTimer);
-    toastTimer = setTimeout(() => $('toast').classList.remove('show'), 4000);
+    $('toast').inert = false; $('toast').classList.add('show'); clearTimeout(toastTimer);
+    toastTimer = setTimeout(() => { $('toast').classList.remove('show'); $('toast').inert = true; }, 4000);
   }
-  $('toastUndo').addEventListener('click', () => { if (undoFn) undoFn(); undoFn = null; $('toast').classList.remove('show'); });
+  $('toastUndo').addEventListener('click', () => { if (undoFn) undoFn(); undoFn = null; $('toast').classList.remove('show'); $('toast').inert = true; if (openSheet) openSheet.querySelector('button').focus(); else $(view === 'archive' ? 'tabArchive' : 'addBtn').focus(); });
 
   // пересчитать, когда возвращаешься в приложение (например, на следующий день)
   document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
