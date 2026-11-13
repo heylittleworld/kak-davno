@@ -149,6 +149,9 @@
   .hist li > span { overflow-wrap: anywhere; min-width: 0; }
   .hist li small { display: block; margin: 3px 0 0; }
   @media (max-width: 380px) { .card { flex-wrap: wrap; } .done-btn { margin-left: auto; } }
+  .storage-bar { display: block; max-width: 608px; width: calc(100% - 32px); margin: 8px auto; text-align: left; font-size: 13px; color: var(--muted); padding: 8px 0; }
+  .cloud-note { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
+  .secondary:disabled { opacity: .45; cursor: default; }
 </style>
 </head>
 <body>
@@ -157,6 +160,7 @@
   <h1>Как давно</h1>
   <button class="icon-btn" id="settingsBtn" aria-label="Настройки">⚙︎</button>
 </header>
+<button class="storage-bar" id="storageStatus" aria-live="polite">На этом устройстве · локальный режим</button>
 
 <div class="tabs">
   <div class="seg">
@@ -226,8 +230,27 @@
 <!-- Настройки -->
 <div class="sheet" id="setSheet">
   <div class="grab"></div>
-  <h2>Резервная копия</h2>
-  <div class="stat">Записи хранятся на этом устройстве. Время от времени сохраняй копию в файл, чтобы ничего не потерять.</div>
+  <h2>Настройки</h2>
+  <h3>Личное облако</h3>
+  <p class="cloud-note" id="cloudNotice" role="status"></p>
+  <form id="loginForm">
+    <label for="emailInput">Email</label>
+    <input class="field" id="emailInput" type="email" autocomplete="username" required>
+    <label for="passwordInput">Пароль</label>
+    <input class="field" id="passwordInput" type="password" autocomplete="current-password" required>
+    <button class="primary" id="loginBtn" type="submit">Войти в облако</button>
+  </form>
+  <button class="secondary" id="reloadCloudBtn" hidden>Загрузить из облака</button>
+  <button class="secondary" id="migrateBtn" hidden>Перенести историю с этого устройства</button>
+  <div id="migrationBackup" hidden>
+    <p class="cloud-note">Сначала скачай резервную копию локальной истории. Она останется на устройстве и после переноса.</p>
+    <button class="secondary" id="localBackupBtn">Скачать локальную копию</button>
+    <label><input type="checkbox" id="backupConfirmed"> Я сохранила файл резервной копии</label>
+    <button class="primary" id="confirmMigrationBtn" disabled>Подтвердить перенос в облако</button>
+  </div>
+  <button class="secondary" id="localModeBtn" hidden>Выйти и открыть локальный режим</button>
+  <h3>Резервная копия</h3>
+  <div class="cloud-note" id="backupNotice">Копия относится к текущему режиму. Сохраняй её время от времени, чтобы не потерять историю.</div>
   <div class="hint">Копия включает историю, архив и интервалы. При загрузке записи объединяются; настройки уже существующих дел остаются прежними.</div>
   <button class="secondary" id="exportBtn">Сохранить копию в файл</button>
   <button class="secondary" id="importBtn">Загрузить из файла</button>
@@ -236,6 +259,8 @@
 
 <div class="toast" id="toast" role="status" inert><span id="toastText"></span><button id="toastUndo">Отменить</button></div>
 
+<script src="supabase-config.js"></script>
+<script src="cloud.js"></script>
 <script>
 (() => {
   const KEY = 'kakdavno.v1';
@@ -243,6 +268,8 @@
 
   // ---------- данные ----------
   let entries = [], taskSettings = Object.create(null), storageBlocked = false, persisted;
+  const cloud = globalThis.KakDavnoCloud ? new KakDavnoCloud.Client(globalThis.KAK_DAVNO_SUPABASE) : null;
+  let mode = 'local', busy = false, cloudReady = false, cloudRevision = 0, cloudImports = [], cloudMessage = '';
   // Сначала сохраняем, затем подтверждаем действие. При ошибке возвращаем данные в памяти.
   const snapshot = () => JSON.stringify({ version: 2, entries, taskSettings });
   const restore = json => {
@@ -250,8 +277,16 @@
     entries = data.entries;
     taskSettings = Object.assign(Object.create(null), data.taskSettings);
   };
-  const save = () => {
+  const save = async (importId = null) => {
     try {
+      busy = true; updateStorageUI();
+      if (mode === 'cloud') {
+        if (!cloudReady) throw new Error('Сначала нажми «Загрузить из облака».');
+        const result = await cloud.save(JSON.parse(snapshot()), cloudRevision, importId);
+        applyCloud(result);
+        cloudMessage = 'Сохранено в облаке';
+        return true;
+      }
       if (storageBlocked) throw new Error('Исходные данные не удалось прочитать. Сначала сохрани их копию в настройках и восстанови данные из исправного файла.');
       const next = snapshot();
       localStorage.setItem(KEY, next);
@@ -259,9 +294,10 @@
       return true;
     } catch (e) {
       restore(persisted);
-      alert('Изменение не сохранено: ' + e.message);
+      if (mode === 'cloud') { cloudReady = false; cloudMessage = e.message; }
+      alert((mode === 'cloud' ? 'Не удалось подтвердить сохранение: ' : 'Изменение не сохранено: ') + e.message);
       return false;
-    }
+    } finally { busy = false; updateStorageUI(); }
   };
   const uid = () => Date.now().toString(36) + Math.random().toString(36).slice(2, 7);
   const norm = s => s.trim().replace(/\s+/g, ' ').toLowerCase().replace(/ё/g, 'е');
@@ -319,7 +355,8 @@
       if (!data.taskSettings || typeof data.taskSettings !== 'object' || Array.isArray(data.taskSettings)) throw new Error('Неверные настройки дел.');
       for (const [key, value] of Object.entries(data.taskSettings)) {
         if (!value || typeof value !== 'object' || (value.archived !== undefined && typeof value.archived !== 'boolean') || (value.interval != null && (!Number.isInteger(value.interval) || value.interval < 1 || value.interval > 36500))) throw new Error('Неверный интервал или состояние архива.');
-        settings[norm(key)] = { archived: value.archived === true, interval: value.interval ?? null };
+        if (value.id !== undefined && (typeof value.id !== 'string' || !value.id || value.id.length > 200)) throw new Error('Неверный идентификатор дела.');
+        settings[norm(key)] = { archived: value.archived === true, interval: value.interval ?? null, ...(value.id ? { id: value.id } : {}) };
       }
     }
     return { entries: checked, taskSettings: settings };
@@ -358,7 +395,7 @@
   // ---------- главный экран ----------
   const esc = s => s.replace(/[&<>"']/g, c => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[c]));
 
-  function render() { renderList(); renderCal(); }
+  function render() { renderList(); renderCal(); updateStorageUI(); }
 
   function renderList() {
     const all = tasks().filter(t => Boolean(t.settings.archived) === (view === 'archive'));
@@ -388,13 +425,13 @@
     }).join('');
   }
 
-  $('list').addEventListener('click', e => {
+  $('list').addEventListener('click', async e => { if (busy) return;
     const card = e.target.closest('.card'); if (!card) return;
     const t = findTask(card.dataset.key); if (!t) return;
     if (e.target.closest('[data-done]')) {
       const entry = { id: uid(), name: t.name, date: toISO(today()), created: Date.now() };
-      entries.push(entry); if (!save()) return; render();
-      toast(`«${t.name}» — отмечено сегодня`, () => { entries = entries.filter(x => x.id !== entry.id); save(); render(); });
+      entries.push(entry); if (!(await save())) return; render();
+      toast(`«${t.name}» — отмечено сегодня`, async () => { if (busy) return; entries = entries.filter(x => x.id !== entry.id); await save(); render(); });
     } else if (e.target.closest('[data-open]')) {
       openHistory(t.key);
     }
@@ -482,21 +519,21 @@
     const c = e.target.closest('[data-shift]'); if (c) { setDate(shiftDays(+c.dataset.shift)); refreshSuggest(); }
   });
   $('dateInput').addEventListener('change', () => { setDate($('dateInput').value); refreshSuggest(); });
-  $('saveBtn').addEventListener('click', () => {
+  $('saveBtn').addEventListener('click', async () => { if (busy) return;
     const raw = clean($('nameInput').value), date = $('dateInput').value;
     if (!raw || !validDate(date) || date > toISO(today())) return;
     if (editingId) {
       const entry = entries.find(e => e.id === editingId); if (!entry) return;
       const previousDate = entry.date; entry.date = date;
-      if (!save()) return;
+      if (!(await save())) return;
       render(); openHistory(norm(entry.name));
-      toast('Дата изменена', () => { const current = entries.find(e => e.id === entry.id); if (current) current.date = previousDate; save(); render(); fillHistory(); });
+      toast('Дата изменена', async () => { if (busy) return; const current = entries.find(e => e.id === entry.id); if (current) current.date = previousDate; await save(); render(); fillHistory(); });
       return;
     }
     const existing = findTask(norm(raw));
     const entry = { id: uid(), name: existing ? existing.name : raw, date, created: Date.now() };
-    entries.push(entry); if (!save()) return; close(); render();
-    toast(`Записано: «${entry.name}»`, () => { entries = entries.filter(x => x.id !== entry.id); save(); render(); });
+    entries.push(entry); if (!(await save())) return; close(); render();
+    toast(`Записано: «${entry.name}»`, async () => { if (busy) return; entries = entries.filter(x => x.id !== entry.id); await save(); render(); });
   });
 
   // ---------- история ----------
@@ -535,7 +572,7 @@
       return `<li><span>${fmtDate(e.date)}<small>${ago}</small></span><div class="entry-actions"><button class="edit-entry" data-edit="${esc(e.id)}" aria-label="${esc('Изменить дату ' + fmtDate(e.date))}">Изменить</button><button class="del" data-id="${esc(e.id)}" aria-label="${esc('Удалить запись за ' + fmtDate(e.date))}">×</button></div></li>`;
     }).join('');
   }
-  $('histList').addEventListener('click', e => {
+  $('histList').addEventListener('click', async e => { if (busy) return;
     const edit = e.target.closest('[data-edit]');
     if (edit) {
       const entry = entries.find(x => x.id === edit.dataset.edit); if (!entry) return;
@@ -546,27 +583,27 @@
     }
     const b = e.target.closest('[data-id]'); if (!b) return;
     const removed = entries.find(x => x.id === b.dataset.id);
-    entries = entries.filter(x => x.id !== b.dataset.id); if (!save()) return; render(); fillHistory();
-    toast('Запись удалена', () => { entries.push(removed); save(); render(); if (histKey) fillHistory(); });
+    entries = entries.filter(x => x.id !== b.dataset.id); if (!(await save())) return; render(); fillHistory();
+    toast('Запись удалена', async () => { if (busy) return; entries.push(removed); await save(); render(); if (histKey) fillHistory(); });
   });
-  $('saveIntervalBtn').addEventListener('click', () => {
+  $('saveIntervalBtn').addEventListener('click', async () => { if (busy) return;
     const t = findTask(histKey); if (!t) return;
     const raw = $('intervalInput').value;
     const interval = raw === '' ? null : Number(raw);
     if (interval !== null && (!Number.isInteger(interval) || interval < 1 || interval > 36500)) { alert('Укажи целое число дней от 1 до 36500 или оставь поле пустым.'); return; }
     taskSettings[t.key] = { ...t.settings, interval };
-    if (!save()) return;
+    if (!(await save())) return;
     render(); fillHistory(); toast('Интервал сохранён');
   });
-  $('archiveBtn').addEventListener('click', () => {
+  $('archiveBtn').addEventListener('click', async () => { if (busy) return;
     const t = findTask(histKey); if (!t) return;
     const before = { ...t.settings };
     taskSettings[t.key] = { ...before, archived: !before.archived };
-    if (!save()) return;
+    if (!(await save())) return;
     close(); render();
-    toast(before.archived ? 'Дело возвращено из архива' : 'Дело в архиве. История сохранена.', () => { taskSettings[t.key] = before; save(); render(); });
+    toast(before.archived ? 'Дело возвращено из архива' : 'Дело в архиве. История сохранена.', async () => { if (busy) return; taskSettings[t.key] = before; await save(); render(); });
   });
-  $('renameBtn').addEventListener('click', () => {
+  $('renameBtn').addEventListener('click', async () => { if (busy) return;
     const t = findTask(histKey); if (!t) return;
     const v = prompt('Новое название', t.name); if (v === null) return;
     const name = clean(v); if (!name) return;
@@ -579,15 +616,15 @@
       delete taskSettings[t.key];
     }
     entries.forEach(e => { if (norm(e.name) === t.key) e.name = finalName; });
-    if (!save()) return; histKey = newKey; render(); fillHistory();
+    if (!(await save())) return; histKey = newKey; render(); fillHistory();
   });
-  $('deleteTaskBtn').addEventListener('click', () => {
+  $('deleteTaskBtn').addEventListener('click', async () => { if (busy) return;
     const t = findTask(histKey); if (!t) return;
     if (!confirm(`Удалить «${t.name}» и все ${t.list.length} ${plural(t.list.length, 'запись', 'записи', 'записей')}?`)) return;
     const removed = entries.filter(e => norm(e.name) === t.key);
     const settings = { ...t.settings }; delete taskSettings[t.key];
-    entries = entries.filter(e => norm(e.name) !== t.key); if (!save()) return; close(); render();
-    toast(`«${t.name}» удалено`, () => { entries.push(...removed); taskSettings[t.key] = settings; save(); render(); });
+    entries = entries.filter(e => norm(e.name) !== t.key); if (!(await save())) return; close(); render();
+    toast(`«${t.name}» удалено`, async () => { if (busy) return; entries.push(...removed); taskSettings[t.key] = settings; await save(); render(); });
   });
 
   // ---------- календарь ----------
@@ -692,50 +729,179 @@
     if (tx === null) return; const dx = e.changedTouches[0].clientX - tx; tx = null;
     if (Math.abs(dx) > 60) shiftMonth(dx < 0 ? 1 : -1);
   });
-  $('dayPanel').addEventListener('click', e => {
+  $('dayPanel').addEventListener('click', async e => { if (busy) return;
     const b = e.target.closest('[data-id]'); if (!b) return;
     const removed = entries.find(x => x.id === b.dataset.id);
-    entries = entries.filter(x => x.id !== b.dataset.id); if (!save()) return; render();
-    toast('Запись удалена', () => { entries.push(removed); save(); render(); });
+    entries = entries.filter(x => x.id !== b.dataset.id); if (!(await save())) return; render();
+    toast('Запись удалена', async () => { if (busy) return; entries.push(removed); await save(); render(); });
   });
 
   // ---------- резервная копия ----------
+  function updateStorageUI() {
+    $('storageStatus').textContent = busy ? 'Подожди · выполняется запрос…' : mode === 'local'
+      ? 'На этом устройстве · локальный режим' : cloudReady ? 'Облако · данные загружены' : 'Облако · требуется вход или загрузка данных';
+    $('cloudNotice').textContent = busy ? 'Подожди, выполняется запрос…' : cloudMessage || (!cloud?.configured
+      ? 'Облако ещё не настроено. Следуй инструкции SUPABASE.md. Локальный режим работает как прежде.'
+      : mode === 'local' ? 'Вход откроет отдельную облачную историю. Локальные записи останутся на устройстве. Для облачных изменений нужен интернет.'
+      : 'Облачный режим. Для изменений нужен интернет. На другом устройстве нажми «Загрузить из облака», чтобы увидеть последние записи.');
+    $('loginForm').hidden = !cloud?.configured || mode === 'cloud' && cloud?.signedIn && cloudReady;
+    $('loginBtn').disabled = busy || !cloud?.configured;
+    $('reloadCloudBtn').hidden = mode !== 'cloud';
+    $('reloadCloudBtn').disabled = busy || !cloud?.signedIn;
+    $('migrateBtn').hidden = mode !== 'cloud';
+    $('migrateBtn').disabled = busy || !cloudReady;
+    $('localModeBtn').hidden = mode !== 'cloud';
+    $('localModeBtn').disabled = busy;
+    $('backupNotice').textContent = mode === 'cloud' ? 'Экспортируется загруженная облачная история. Локальная история хранится отдельно.' : 'Экспортируется история с этого устройства.';
+    $('exportBtn').disabled = busy || mode === 'cloud' && !cloudReady;
+    $('importBtn').disabled = busy || mode === 'cloud' && !cloudReady;
+    $('confirmMigrationBtn').disabled = busy || !$('backupConfirmed').checked || !cloudReady;
+  }
+  function rememberMode() { try { sessionStorage.setItem('kakdavno.mode', mode); } catch {} }
+  function clearUndo() { undoFn = null; $('toast').classList.remove('show'); $('toast').inert = true; }
+  function applyCloud(result) {
+    const checked = validateData(KakDavnoCloud.decode(result));
+    entries = checked.entries; taskSettings = checked.taskSettings;
+    cloudRevision = result.revision; cloudImports = result.imports;
+    storageBlocked = false; cloudReady = true; persisted = snapshot();
+  }
+  function enterCloud() {
+    mode = 'cloud'; rememberMode(); clearUndo();
+    entries = []; taskSettings = Object.create(null); storageBlocked = false;
+    persisted = snapshot(); cloudReady = false;
+    $('migrationBackup').hidden = true; $('backupConfirmed').checked = false;
+  }
+  function enterLocal() {
+    mode = 'local'; rememberMode(); clearUndo(); cloudReady = false;
+    entries = []; taskSettings = Object.create(null); storageBlocked = false;
+    try {
+      const raw = localStorage.getItem(KEY);
+      const data = validateData(raw === null ? { entries: [] } : JSON.parse(raw));
+      entries = data.entries; taskSettings = data.taskSettings;
+    } catch { storageBlocked = true; cloudMessage = 'Локальные данные не удалось прочитать. Сохрани исходную копию перед восстановлением.'; }
+    persisted = snapshot(); $('migrationBackup').hidden = true;
+  }
+  async function reloadCloud() {
+    if (busy || mode !== 'cloud') return;
+    busy = true; cloudReady = false; clearUndo(); updateStorageUI();
+    try { applyCloud(await cloud.load()); cloudMessage = 'Данные загружены из облака.'; }
+    catch (error) { cloudMessage = error.message; }
+    finally { busy = false; render(); }
+  }
+  $('storageStatus').addEventListener('click', () => { if (!busy) open('setSheet'); });
+  $('loginForm').addEventListener('submit', async e => {
+    e.preventDefault(); if (busy) return;
+    if (!cloud?.configured) return;
+    busy = true; updateStorageUI();
+    const password = $('passwordInput').value; $('passwordInput').value = '';
+    try {
+      await cloud.signIn($('emailInput').value.trim(), password);
+      enterCloud(); applyCloud(await cloud.load()); cloudMessage = 'Вход выполнен. Открыта облачная история; локальную можно перенести кнопкой ниже.';
+    } catch (error) { cloudMessage = error.message; cloudReady = false; }
+    finally {
+      busy = false; render();
+      if (openSheet === $('setSheet')) $(cloudReady ? 'reloadCloudBtn' : 'loginBtn').focus();
+    }
+  });
+  $('reloadCloudBtn').addEventListener('click', reloadCloud);
+  $('localModeBtn').addEventListener('click', async () => {
+    if (busy) return;
+    busy = true; updateStorageUI(); cloudMessage = '';
+    try { await cloud.signOut(); }
+    catch { cloudMessage = 'Сессия удалена с этого устройства. Выход на сервере не подтверждён из-за ошибки связи.'; }
+    finally { enterLocal(); busy = false; render(); if (openSheet === $('setSheet')) $('emailInput').focus(); }
+  });
+  // Локальный источник получает постоянный идентификатор. Отметка переноса хранится в БД.
+  function migrationSource() {
+    const key = 'kakdavno.migration-source';
+    let id = localStorage.getItem(key);
+    if (!id) { id = crypto.randomUUID(); localStorage.setItem(key, id); }
+    if (!/^[0-9a-f-]{36}$/i.test(id)) throw new Error('Неверный идентификатор локальной истории. Используй импорт резервной копии.');
+    return id;
+  }
+  $('migrateBtn').addEventListener('click', () => {
+    if (busy || !cloudReady) return;
+    try {
+      if (cloudImports.includes(migrationSource())) { $('migrationBackup').hidden = true; cloudMessage = 'История с этого устройства уже перенесена. Дальнейшие локальные изменения автоматически не синхронизируются.'; updateStorageUI(); return; }
+      const local = validateData(JSON.parse(localStorage.getItem(KEY) || '{"entries":[]}'));
+      if (!local.entries.length) { cloudMessage = 'На этом устройстве нет локальных записей для переноса.'; updateStorageUI(); return; }
+      $('migrationBackup').hidden = false; $('backupConfirmed').checked = false; updateStorageUI();
+    } catch (error) { cloudMessage = error.message; updateStorageUI(); }
+  });
+  $('localBackupBtn').addEventListener('click', async () => {
+    try {
+      const raw = localStorage.getItem(KEY);
+      if (!raw) throw new Error('Локальная история не найдена.');
+      await downloadBackup(raw, 'kak-davno-local', false);
+    } catch (error) { cloudMessage = error.message; updateStorageUI(); }
+  });
+  $('backupConfirmed').addEventListener('change', updateStorageUI);
+  function mergeRecords(data) {
+    const ids = new Map(entries.map(x => [x.id, x]));
+    for (const entry of data.entries) {
+      const existing = ids.get(entry.id);
+      if (existing && (existing.name !== entry.name || existing.date !== entry.date)) throw new Error('Один идентификатор относится к разным записям. Импорт отменён, данные не изменены.');
+    }
+    const add = data.entries.filter(x => !ids.has(x.id));
+    const knownTasks = new Set(entries.map(x => norm(x.name)));
+    for (const [key, value] of Object.entries(data.taskSettings)) if (!knownTasks.has(key)) {
+      // Идентификаторы дел из другой копии не должны конфликтовать с текущими.
+      taskSettings[key] = { interval: value.interval, archived: value.archived };
+    }
+    entries.push(...add);
+    return add.length;
+  }
+  $('confirmMigrationBtn').addEventListener('click', async () => {
+    if (busy || !cloudReady || !$('backupConfirmed').checked) return;
+    try {
+      const source = migrationSource();
+      if (cloudImports.includes(source)) return;
+      const local = validateData(JSON.parse(localStorage.getItem(KEY) || '{"entries":[]}'));
+      mergeRecords(local);
+      if (!(await save(source))) return;
+      $('migrationBackup').hidden = true; cloudMessage = 'История перенесена. Локальная копия сохранена отдельно.'; render(); $('migrateBtn').focus();
+    } catch (error) { restore(persisted); cloudMessage = error.message; render(); }
+  });
+  // Пока идёт запрос, не допускаем второе действие над тем же снимком.
+  for (const event of ['click', 'submit', 'keydown']) document.addEventListener(event, e => {
+    if (busy) { e.preventDefault(); e.stopImmediatePropagation(); }
+  }, true);
   $('settingsBtn').addEventListener('click', () => open('setSheet'));
+  async function downloadBackup(json, prefix = 'kak-davno', share = true) {
+    const fname = `${prefix}-${toISO(today())}.json`;
+    const file = new File([json], fname, { type: 'application/json' });
+    if (share && navigator.canShare && navigator.canShare({ files: [file] })) {
+      try { await navigator.share({ files: [file], title: fname }); return; }
+      catch (error) { if (error.name === 'AbortError') return; }
+    }
+    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = fname;
+    document.body.append(a); a.click(); a.remove();
+    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+  }
   $('exportBtn').addEventListener('click', async () => {
     let json;
     try {
       json = storageBlocked ? localStorage.getItem(KEY) : JSON.stringify({ app: 'kak-davno', version: 2, exported: new Date().toISOString(), entries, taskSettings }, null, 2);
       if (json === null) throw new Error('Сохранённые данные недоступны.');
     } catch (e) { alert('Не удалось создать копию: ' + e.message); return; }
-    const fname = `kak-davno-${toISO(today())}.json`;
-    const file = new File([json], fname, { type: 'application/json' });
-    try {
-      if (navigator.canShare && navigator.canShare({ files: [file] })) { await navigator.share({ files: [file], title: fname }); return; }
-    } catch (e) { if (e.name === 'AbortError') return; }
-    const a = document.createElement('a'); a.href = URL.createObjectURL(file); a.download = fname; a.click();
-    setTimeout(() => URL.revokeObjectURL(a.href), 2000);
+    try { await downloadBackup(json); } catch (error) { alert('Не удалось создать файл: ' + error.message); }
   });
   $('importBtn').addEventListener('click', () => $('importFile').click());
   $('importFile').addEventListener('change', async e => {
+    if (busy) return;
     const f = e.target.files[0]; e.target.value = ''; if (!f) return;
+    busy = true; updateStorageUI();
     try {
       const data = validateData(JSON.parse(await f.text()));
       const list = data.entries;
       if (storageBlocked && !confirm('Заменить непрочитанные данные этим файлом? Перед продолжением сохрани исходную копию.')) return;
-      const ids = new Map(entries.map(x => [x.id, x]));
-      for (const entry of list) {
-        const existing = ids.get(entry.id);
-        if (existing && (existing.name !== entry.name || existing.date !== entry.date)) throw new Error('Один идентификатор относится к разным записям. Импорт отменён, данные не изменены.');
-      }
-      const add = list.filter(x => !ids.has(x.id));
-      const knownTasks = new Set(entries.map(x => norm(x.name)));
-      for (const [key, value] of Object.entries(data.taskSettings)) if (!knownTasks.has(key)) taskSettings[key] = value;
-      entries.push(...add);
+      const added = mergeRecords(data);
       const wasBlocked = storageBlocked; storageBlocked = false;
-      if (!save()) { storageBlocked = wasBlocked; return; }
+      if (!(await save())) { storageBlocked = wasBlocked; return; }
       close(); render();
-      alert(`Добавлено записей: ${add.length}. Уже были: ${list.length - add.length}. Настройки существующих дел сохранены.`);
-    } catch (err) { alert('Не получилось прочитать файл: ' + err.message); }
+      alert(`Добавлено записей: ${added}. Уже были: ${list.length - added}. Настройки существующих дел сохранены.`);
+    } catch (err) { restore(persisted); alert('Не получилось прочитать файл: ' + err.message); }
+    finally { busy = false; updateStorageUI(); }
   });
 
   // ---------- уведомление с отменой ----------
@@ -746,12 +912,28 @@
     $('toast').inert = false; $('toast').classList.add('show'); clearTimeout(toastTimer);
     toastTimer = setTimeout(() => { $('toast').classList.remove('show'); $('toast').inert = true; }, 4000);
   }
-  $('toastUndo').addEventListener('click', () => { if (undoFn) undoFn(); undoFn = null; $('toast').classList.remove('show'); $('toast').inert = true; if (openSheet) openSheet.querySelector('button').focus(); else $(view === 'archive' ? 'tabArchive' : 'addBtn').focus(); });
+  $('toastUndo').addEventListener('click', async () => { if (busy) return; if (undoFn) await undoFn(); undoFn = null; $('toast').classList.remove('show'); $('toast').inert = true; if (openSheet) openSheet.querySelector('button').focus(); else $(view === 'archive' ? 'tabArchive' : 'addBtn').focus(); });
 
   // пересчитать, когда возвращаешься в приложение (например, на следующий день)
-  document.addEventListener('visibilitychange', () => { if (!document.hidden) render(); });
+  document.addEventListener('visibilitychange', () => {
+    if (!document.hidden && !busy) {
+      if (mode === 'cloud' && cloud?.signedIn && !openSheet) reloadCloud();
+      else render();
+    }
+  });
 
   render();
+  async function initializeCloud() {
+    if (!cloud?.configured) return;
+    let preferred = 'local'; try { preferred = sessionStorage.getItem('kakdavno.mode') || 'local'; } catch {}
+    const signedIn = cloud.restoreSession();
+    if (preferred === 'cloud' || signedIn) {
+      enterCloud(); render();
+      if (signedIn) await reloadCloud();
+      else { cloudMessage = 'Войди снова, чтобы загрузить облачную историю.'; updateStorageUI(); }
+    }
+  }
+  initializeCloud();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('sw.js').catch(() => {});
 })();
 </script>
