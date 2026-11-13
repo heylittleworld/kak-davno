@@ -59,6 +59,41 @@ function app(initial = { entries: [] }, backend = null) {
 }
 const entry = (id, date, name = 'Полить цветы') => ({ id, date, name, created: 1 });
 
+test('отметка внутри карточки предлагает сегодня, сохраняет выбранную дату и отменяется', async () => {
+  const a = app({ entries: [entry('a', '2024-01-01')] });
+  a.openHistory('полить цветы');
+  assert.equal(a.element('taskDateInput').value, a.toISO(a.today()));
+  a.element('taskDateInput').value = '2024-01-05';
+  await a.click('markTaskBtn');
+  assert.equal(a.state().entries.length, 2);
+  assert.equal(a.state().entries[1].date, '2024-01-05');
+  assert.equal(a.state().entries[1].name, 'Полить цветы');
+  await a.click('toastUndo');
+  assert.equal(a.state().entries.length, 1);
+  a.openHistory('полить цветы');
+  assert.equal(a.element('taskDateInput').value, a.toISO(a.today()));
+});
+
+test('отметка внутри карточки отклоняет будущую дату и откатывается при ошибке записи', async () => {
+  const a = app({ entries: [entry('a', '2024-01-01')] });
+  a.openHistory('полить цветы');
+  a.element('taskDateInput').value = '9999-01-01';
+  await a.click('markTaskBtn');
+  assert.equal(a.state().entries.length, 1);
+  a.element('taskDateInput').value = '2024-01-05';
+  a.failWrites(); await a.click('markTaskBtn');
+  assert.equal(a.state().entries.length, 1);
+});
+
+test('архивное дело нельзя отметить из карточки', async () => {
+  const a = app({ entries: [entry('a', '2024-01-01')] });
+  a.openHistory('полить цветы'); await a.click('archiveBtn');
+  a.openHistory('полить цветы');
+  assert.equal(a.element('markTaskControls').hidden, true);
+  await a.click('markTaskBtn');
+  assert.equal(a.state().entries.length, 1);
+});
+
 test('читает старый формат истории без потери записей', async () => {
   const a = app({ entries: [entry('a', '2024-01-01')] });
   assert.equal(a.state().entries.length, 1);

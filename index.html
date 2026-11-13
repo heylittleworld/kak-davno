@@ -52,9 +52,6 @@
   .ago { text-align: right; min-width: 64px; }
   .ago b { display: block; font-size: 24px; line-height: 1; color: var(--c, var(--fresh)); }
   .ago span { font-size: 12px; color: var(--muted); }
-  .done-btn { position: relative; padding: 5px 7px; border-radius: 7px; background: transparent; color: #72685f;
-    font-size: 12px; line-height: 16px; font-weight: 400; white-space: nowrap; }
-  .done-btn::after { content: ''; position: absolute; inset: -9px 0; }
 
   .empty { text-align: center; color: var(--muted); padding: 60px 20px; line-height: 1.5; }
   .empty b { display: block; font-size: 40px; margin-bottom: 8px; }
@@ -149,7 +146,7 @@
   .edit-entry { font-size: 13px; color: var(--accent); padding: 8px; }
   .hist li > span { overflow-wrap: anywhere; min-width: 0; }
   .hist li small { display: block; margin: 3px 0 0; }
-  @media (max-width: 380px) { .card { flex-wrap: wrap; } .done-btn { margin-left: auto; } }
+  @media (max-width: 380px) { .card { flex-wrap: wrap; } }
   .storage-bar { display: block; max-width: 608px; width: calc(100% - 32px); margin: 8px auto; text-align: left; font-size: 13px; color: var(--muted); padding: 8px 0; }
   .cloud-note { font-size: 14px; line-height: 1.5; overflow-wrap: anywhere; }
   .secondary:disabled { opacity: .45; cursor: default; }
@@ -215,6 +212,12 @@
 <div class="sheet" id="histSheet">
   <div class="grab"></div>
   <h2 id="histTitle"></h2>
+  <div id="markTaskControls">
+    <label for="taskDateInput">Когда</label>
+    <input class="field" id="taskDateInput" type="date">
+    <div class="hint" id="taskDateHint"></div>
+    <button class="primary" id="markTaskBtn">Отметить это дело</button>
+  </div>
   <div class="stat" id="histStat"></div>
   <div id="taskStats"></div>
   <label for="intervalInput">Желаемый интервал, дней</label>
@@ -421,7 +424,6 @@
           <div class="card-sub">${fmtDate(t.last.date)} · ${n} ${plural(n, 'раз', 'раза', 'раз')}${schedule ? '<br>' + schedule : ''}</div>
         </button>
         <div class="ago" data-open><b style="${typeof big === 'string' ? 'font-size:17px' : ''}">${big}</b><span>${small}</span></div>
-        ${t.settings.archived ? '' : '<button class="done-btn" data-done>✓ Сегодня</button>'}
       </div>`;
     }).join('');
   }
@@ -429,13 +431,7 @@
   $('list').addEventListener('click', async e => { if (busy) return;
     const card = e.target.closest('.card'); if (!card) return;
     const t = findTask(card.dataset.key); if (!t) return;
-    if (e.target.closest('[data-done]')) {
-      const entry = { id: uid(), name: t.name, date: toISO(today()), created: Date.now() };
-      entries.push(entry); if (!(await save())) return; render();
-      toast(`«${t.name}» — отмечено сегодня`, async () => { if (busy) return; entries = entries.filter(x => x.id !== entry.id); await save(); render(); });
-    } else if (e.target.closest('[data-open]')) {
-      openHistory(t.key);
-    }
+    openHistory(t.key);
   });
   $('search').addEventListener('input', render);
 
@@ -539,7 +535,31 @@
 
   // ---------- история ----------
   let histKey = null;
-  function openHistory(key) { histKey = key; fillHistory(); open('histSheet'); }
+  function refreshTaskDate() {
+    const date = $('taskDateInput').value;
+    $('markTaskBtn').disabled = !validDate(date) || date > toISO(today());
+    $('taskDateHint').textContent = date === toISO(today()) ? 'Сегодня · можно выбрать другую дату в календаре' : 'Выбери дату выполнения в календаре';
+  }
+  function openHistory(key) {
+    histKey = key;
+    $('taskDateInput').value = toISO(today());
+    $('taskDateInput').max = toISO(today());
+    refreshTaskDate(); fillHistory(); open('histSheet');
+  }
+  $('taskDateInput').addEventListener('change', refreshTaskDate);
+  $('markTaskBtn').addEventListener('click', async () => {
+    if (busy) return;
+    const t = findTask(histKey), date = $('taskDateInput').value;
+    if (!t || t.settings.archived || !validDate(date) || date > toISO(today())) return;
+    const entry = { id: uid(), name: t.name, date, created: Date.now() };
+    entries.push(entry); if (!(await save())) return;
+    render(); fillHistory();
+    toast(`«${t.name}» — отмечено за ${fmtDate(date)}`, async () => {
+      if (busy) return;
+      entries = entries.filter(x => x.id !== entry.id);
+      await save(); render(); fillHistory();
+    });
+  });
   function statistics(list, now = today()) {
     const dates = [...new Set(list.map(e => e.date))].sort();
     const gaps = dates.slice(1).map((date, i) => dayNumber(date) - dayNumber(dates[i])).sort((a, b) => a - b);
@@ -555,6 +575,7 @@
   function fillHistory() {
     const t = findTask(histKey); if (!t) { close(); render(); return; }
     $('histTitle').textContent = t.name;
+    $('markTaskControls').hidden = t.settings.archived;
     const stats = statistics(t.list);
     $('histStat').textContent = t.settings.archived ? 'В архиве · история сохранена' : 'История и статистика дела';
     $('intervalInput').value = t.settings.interval ?? '';
