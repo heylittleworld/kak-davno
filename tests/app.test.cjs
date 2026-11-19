@@ -14,7 +14,7 @@ function app(initial = { entries: [] }, backend = null) {
   let failWrite = false, nextPrompt = null;
   const extraStorage = new Map(), session = new Map();
   const document = {
-    body: { children: [], append() {} }, activeElement: null,
+    body: { children: [], style: {}, classList: { add() {}, remove() {} }, append() {} }, activeElement: null,
     createElement: () => ({ click() {}, remove() {} }),
     querySelectorAll: () => [],
     querySelector: id => element(id),
@@ -34,6 +34,7 @@ function app(initial = { entries: [] }, backend = null) {
   }
   const context = vm.createContext({
     document, navigator: {}, console, crypto: require('node:crypto').webcrypto, File,
+    scrollY: 0, scrollTo: ({ top }) => { context.scrollY = top; },
     URL: { createObjectURL: file => { downloads.push(file); return 'blob:test'; }, revokeObjectURL() {} },
     ...(backend ? { KakDavnoCloud: { Client: class { constructor() { return backend; } }, decode: require('../cloud.js').decode } } : {}),
     sessionStorage: { getItem: key => session.get(key) || null, setItem: (key, value) => session.set(key, value) },
@@ -43,12 +44,14 @@ function app(initial = { entries: [] }, backend = null) {
   });
   const instrumented = source.replace(/\}\)\(\);\s*$/, `globalThis.api = {
     validateData, statistics, agoParts, ageColor, dayNumber, toISO, today,
-    tasks, openAdd, openHistory, setView, render, nextTime,
+    tasks, openAdd, openHistory, setView, render, nextTime, close,
     state: () => ({ entries, taskSettings, storageBlocked, mode, busy, cloudReady })
   }; })();`);
   vm.runInContext(instrumented, context);
   return {
     ...context.api, element, alerts, downloads,
+    scroll: y => { context.scrollY = y; }, scrollY: () => context.scrollY,
+    bodyStyle: document.body.style,
     stored: () => stored,
     failWrites: () => { failWrite = true; },
     prompt: value => { nextPrompt = value; },
@@ -360,4 +363,18 @@ test('мини-календарь переключает год, показыв�
   a.element('taskStats').handlers.click({ target: { closest: () => ({ dataset: { month: '-1' } }) } });
   assert.match(a.element('taskStats').innerHTML, /декабрь 2024/);
   assert.match(a.element('taskStats').innerHTML, /×2/);
+});
+
+test('карточка сохраняет прокрутку списка при переходе к другой форме и закрытии', () => {
+  const a = app({ entries: [entry('a', '2024-01-01')] });
+  a.scroll(820); a.openHistory('полить цветы');
+  assert.equal(a.bodyStyle.top, '-820px');
+  assert.equal(a.element('histSheet').scrollTop, 0);
+  a.scroll(0); a.openAdd('2024-01-01', 'Полить цветы');
+  assert.equal(a.bodyStyle.top, '-820px');
+  a.close();
+  assert.equal(a.scrollY(), 820);
+  assert.equal(a.bodyStyle.top, '');
+  a.scroll(350); a.openHistory('полить цветы'); a.close();
+  assert.equal(a.scrollY(), 350);
 });

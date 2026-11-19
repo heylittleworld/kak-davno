@@ -1,5 +1,5 @@
 // При изменении файлов приложения увеличь номер версии — так iPhone подтянет обновление.
-const CACHE = 'kak-davno-v8';
+const CACHE = 'kak-davno-v9';
 const FILES = ['./', 'index.html', 'manifest.json', 'icon-192.png', 'icon-512.png', 'supabase-config.js', 'cloud.js'];
 const ASSETS = new Set(FILES.map(file => new URL(file, self.registration.scope).pathname));
 
