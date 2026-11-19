@@ -47,10 +47,11 @@
   main { max-width: 640px; margin: 0 auto; padding: 8px 16px; }
   .card { background: var(--card); border: 1px solid var(--line); border-radius: var(--radius);
     padding: 14px 14px 14px 16px; margin-bottom: 10px; display: flex; align-items: center; gap: 12px;
-    border-left: 6px solid var(--c, var(--fresh)); }
+    box-shadow: 0 2px 8px rgba(47,42,37,.025); }
   .card-main { flex: 1; min-width: 0; }
+  .card-name::before { content: ""; display: inline-block; width: 7px; height: 7px; border-radius: 50%; background: var(--c, var(--fresh)); margin-right: 8px; vertical-align: middle; }
   .card-name { font-size: 17px; font-weight: 600; margin: 0 0 3px; overflow-wrap: anywhere; }
-  .card-sub { font-size: 13px; color: var(--muted); }
+  .card-sub { font-size: 12px; line-height: 1.6; color: var(--muted); }
   .ago { text-align: right; min-width: 64px; }
   .ago b { display: block; font-size: 24px; line-height: 1; color: var(--c, var(--fresh)); }
   .ago span { font-size: 12px; color: var(--muted); }
@@ -71,7 +72,6 @@
     overscroll-behavior: contain; touch-action: pan-y pinch-zoom;
     visibility: hidden; transform: translateY(105%); transition: transform .22s ease, visibility .22s; }
   .sheet.open { visibility: visible; transform: translateY(0); }
-  .grab { width: 40px; height: 5px; background: var(--line); border-radius: 3px; margin: 0 auto 12px; }
   .sheet h2 { margin: 0 0 14px; font-size: 21px; overflow-wrap: anywhere; }
   label { display: block; font-size: 13px; color: var(--muted); margin: 12px 0 6px; }
   .field { width: 100%; min-width: 0; max-width: 100%; padding: 13px 14px; border-radius: 12px; border: 1px solid var(--line);
@@ -130,13 +130,14 @@
   .toast { position: fixed; left: 50%; transform: translateX(-50%) translateY(150%);
     bottom: calc(90px + env(safe-area-inset-bottom)); background: var(--ink); color: #fff;
     padding: 11px 16px; border-radius: 14px; font-size: 15px; display: flex; gap: 14px; align-items: center;
-    transition: transform .2s ease, opacity .2s ease; z-index: 20; max-width: 92vw;
+    transition: transform .2s ease, opacity .2s ease; z-index: 20; width: max-content; max-width: 92vw;
     opacity: 0; pointer-events: none; }
   .toast.show { transform: translateX(-50%) translateY(0); opacity: 1; pointer-events: auto; }
   .toast button { color: #ffc9a8; font-weight: 600; }
+  .toast span { min-width: 0; overflow-wrap: anywhere; }
   button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   button.card-main { text-align: left; padding: 0; }
-  .sheet-close { float: right; font-size: 24px; padding: 0 8px; }
+  .sheet-close { float: right; position: sticky; top: 0; z-index: 2; width: 44px; height: 44px; font-size: 26px; border-radius: 50%; background: var(--bg); }
   .insight { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin: 14px 0; }
   .insight h3 { margin: 0 0 10px; font-size: 16px; }
   .insight p { margin: 6px 0; line-height: 1.5; font-size: 14px; }
@@ -152,6 +153,19 @@
   .mini-grid .mini-today { outline: 1px solid var(--accent); outline-offset: -1px; }
   .mini-grid sup { font-size: 9px; margin-left: 2px; }
   .rhythm { display: block; width: 100%; height: auto; color: #72685f; }
+  .sort-row { max-width: 640px; margin: 4px auto; padding: 0 16px; display: flex; gap: 8px; align-items: center; }
+  .sort-row label { margin: 0; }
+  .sort-row select { min-width: 0; flex: 1; padding: 10px; font: inherit; font-size: 14px; color: var(--ink); background: var(--card); border: 1px solid var(--line); border-radius: 10px; }
+  .save-status { font-size: 12px; color: #5b7351; margin: 10px 0; }
+  #saveStatus { max-width: 608px; margin: 6px auto; padding: 0 16px; }
+  .save-status:empty { display: none; }
+  .task-settings { margin-top: 18px; padding: 12px; border: 1px solid var(--line); border-radius: 12px; }
+  summary { cursor: pointer; padding: 10px 0; font-size: 14px; }
+  .hist .history-month { display: block; border: 0; padding-top: 20px; font-size: 14px; font-weight: 600; }
+  .entry-menu { text-align: right; flex-shrink: 0; }
+  .entry-menu summary { min-width: 44px; min-height: 44px; list-style: none; font-size: 22px; text-align: center; }
+  .entry-menu summary::-webkit-details-marker { display: none; }
+  .entry-menu[open] .entry-actions { flex-direction: column; }
   .entry-actions { display: flex; gap: 4px; }
   .edit-entry { font-size: 13px; color: var(--accent); padding: 8px; }
   .hist li > span { overflow-wrap: anywhere; min-width: 0; }
@@ -182,6 +196,10 @@
   <div class="search" id="searchWrap" hidden>
     <input id="search" type="search" placeholder="Найти дело…" aria-label="Найти дело" autocomplete="off">
   </div>
+  <div class="sort-row"><label for="sortTasks">Порядок</label><select id="sortTasks">
+    <option value="oldest">Давно не делала</option><option value="next">Ближайшие даты</option><option value="name">По названию</option>
+  </select></div>
+  <p class="save-status" id="saveStatus" role="status"></p>
   <main id="list"></main>
 </div>
 
@@ -202,7 +220,6 @@
 
 <!-- Добавление -->
 <div class="sheet" id="addSheet">
-  <div class="grab"></div>
   <h2 id="addTitle">Что сделала?</h2>
   <label for="nameInput">Дело</label>
   <input class="field" id="nameInput" placeholder="Например: помыла холодильник" autocomplete="off" enterkeyhint="done">
@@ -220,7 +237,6 @@
 
 <!-- История дела -->
 <div class="sheet" id="histSheet">
-  <div class="grab"></div>
   <h2 id="histTitle"></h2>
   <div id="markTaskControls">
     <label for="taskDateInput">Когда</label>
@@ -228,22 +244,24 @@
     <div class="hint" id="taskDateHint"></div>
     <button class="primary" id="markTaskBtn">Отметить это дело</button>
   </div>
+  <p class="save-status" id="taskSaveStatus" role="status"></p>
   <div class="stat" id="histStat"></div>
   <div id="taskStats"></div>
+  <h3>История</h3>
+  <ul class="hist" id="histList"></ul>
+  <details class="task-settings" id="taskSettingsPanel"><summary>Настройки дела</summary>
   <label for="intervalInput">Желаемый интервал, дней</label>
   <input class="field" id="intervalInput" type="number" min="1" max="36500" step="1" placeholder="Не задан">
   <div class="hint">Оставь пустым, если у дела нет расписания. Цвет карточки будет учитывать этот интервал.</div>
   <button class="secondary" id="saveIntervalBtn">Сохранить интервал</button>
-  <h3>История</h3>
-  <ul class="hist" id="histList"></ul>
   <button class="secondary" id="renameBtn">Переименовать</button>
   <button class="secondary" id="archiveBtn">В архив</button>
   <button class="secondary danger" id="deleteTaskBtn">Удалить дело целиком</button>
+  </details>
 </div>
 
 <!-- Настройки -->
 <div class="sheet" id="setSheet">
-  <div class="grab"></div>
   <h2>Настройки</h2>
   <h3>Личное облако</h3>
   <p class="cloud-note" id="cloudNotice" role="status"></p>
@@ -292,22 +310,27 @@
     taskSettings = Object.assign(Object.create(null), data.taskSettings);
   };
   const save = async (importId = null) => {
+    const status = message => { $('saveStatus').textContent = message; $('taskSaveStatus').textContent = message; };
     try {
+      status('Сохраняем…');
       busy = true; updateStorageUI();
       if (mode === 'cloud') {
         if (!cloudReady) throw new Error('Сначала нажми «Загрузить из облака».');
         const result = await cloud.save(JSON.parse(snapshot()), cloudRevision, importId);
         applyCloud(result);
         cloudMessage = 'Сохранено в облаке';
+        status('✓ Сохранено в облаке');
         return true;
       }
       if (storageBlocked) throw new Error('Исходные данные не удалось прочитать. Сначала сохрани их копию в настройках и восстанови данные из исправного файла.');
       const next = snapshot();
       localStorage.setItem(KEY, next);
       persisted = next;
+      status('✓ Сохранено на этом устройстве');
       return true;
     } catch (e) {
       restore(persisted);
+      status(mode === 'cloud' ? 'Не удалось подтвердить сохранение. Загрузи данные из облака перед повтором.' : 'Не удалось подтвердить сохранение на устройстве. Проверь доступность хранилища.');
       if (mode === 'cloud') { cloudReady = false; cloudMessage = e.message; }
       alert((mode === 'cloud' ? 'Не удалось подтвердить сохранение: ' : 'Изменение не сохранено: ') + e.message);
       return false;
@@ -416,6 +439,13 @@
     $('searchWrap').hidden = !all.length && !$('search').value;
     const q = norm($('search').value || '');
     const list = q ? all.filter(t => t.key.includes(q)) : all;
+    const order = $('sortTasks').value;
+    const due = t => {
+      const stats = statistics(t.list);
+      const interval = t.settings.interval || (stats.days >= 3 ? Math.round(stats.median) : null);
+      return interval ? dayNumber(t.last.date) + interval : Infinity;
+    };
+    list.sort((a, b) => (order === 'name' ? 0 : order === 'next' ? due(a) - due(b) : a.last.date.localeCompare(b.last.date)) || a.name.localeCompare(b.name, 'ru'));
     if (!all.length) {
       if (view === 'archive') { $('list').innerHTML = '<div class="empty">В архиве пока нет дел.<br>Перенеси сюда неактуальное дело из его истории.</div>'; return; }
       $('list').innerHTML = `<div class="empty"><b>🗓</b>Пока пусто.<br>Нажми «Записать» и добавь первое дело —<br>например, «помыла голову».</div>`;
@@ -425,13 +455,12 @@
     $('list').innerHTML = list.map(t => {
       const d = daysSince(t.last.date);
       const [big, small] = agoParts(d);
-      const n = t.list.length;
       const interval = t.settings.interval;
       const schedule = t.settings.archived ? '' : nextTime(t);
       return `<div class="card" style="--c:${ageColor(d, interval)}" data-key="${esc(t.key)}">
         <button class="card-main" data-open aria-label="${esc('История и статистика: ' + t.name)}">
           <p class="card-name">${esc(t.name)}</p>
-          <div class="card-sub">${fmtDate(t.last.date)} · ${n} ${plural(n, 'раз', 'раза', 'раз')}${schedule ? '<br>' + schedule : ''}</div>
+          <div class="card-sub">Последний раз — ${fmtDate(t.last.date)}${schedule ? '<br>' + schedule : ''}</div>
         </button>
         <div class="ago" data-open><b style="${typeof big === 'string' ? 'font-size:17px' : ''}">${big}</b><span>${small}</span></div>
       </div>`;
@@ -444,6 +473,11 @@
     openHistory(t.key);
   });
   $('search').addEventListener('input', render);
+  try { $('sortTasks').value = localStorage.getItem('kakdavno.sort') || 'oldest'; } catch {}
+  $('sortTasks').addEventListener('change', () => {
+    try { localStorage.setItem('kakdavno.sort', $('sortTasks').value); } catch {}
+    renderList();
+  });
 
   // ---------- шторки ----------
   let openSheet = null;
@@ -490,7 +524,7 @@
     if (!openSheet) return;
     if (e.key === 'Escape') { e.preventDefault(); close(); }
     if (e.key === 'Tab') {
-      const focusable = [...openSheet.querySelectorAll('button, input, select, [tabindex="0"]'), ...(!$('toast').inert ? $('toast').querySelectorAll('button') : [])].filter(el => !el.disabled && !el.hidden && el.getClientRects().length);
+      const focusable = [...openSheet.querySelectorAll('button, input, select, summary, [tabindex="0"]'), ...(!$('toast').inert ? $('toast').querySelectorAll('button') : [])].filter(el => !el.disabled && !el.hidden && el.getClientRects().length);
       const first = focusable[0], last = focusable[focusable.length - 1];
       if (e.shiftKey && document.activeElement === first) { e.preventDefault(); last.focus(); }
       else if (!e.shiftKey && document.activeElement === last) { e.preventDefault(); first.focus(); }
@@ -562,12 +596,16 @@
   function refreshTaskDate() {
     const date = $('taskDateInput').value;
     $('markTaskBtn').disabled = !validDate(date) || date > toISO(today());
-    $('taskDateHint').textContent = date === toISO(today()) ? 'Сегодня · можно выбрать другую дату в календаре' : 'Выбери дату выполнения в календаре';
+    const marked = findTask(histKey)?.list.some(e => e.date === date);
+    $('markTaskBtn').textContent = marked ? 'Отметить ещё раз' : 'Отметить это дело';
+    $('taskDateHint').textContent = marked ? (date === toISO(today()) ? '✓ Отмечено сегодня' : `✓ Отмечено за ${fmtDate(date)}`) : date === toISO(today()) ? 'Сегодня · можно выбрать другую дату в календаре' : 'Выбери дату выполнения в календаре';
   }
   let histMonth;
   function openHistory(key) {
     histMonth = new Date(today().getFullYear(), today().getMonth(), 1);
     histKey = key;
+    $('taskSettingsPanel').open = false;
+    $('taskSaveStatus').textContent = '';
     $('taskDateInput').value = toISO(today());
     $('taskDateInput').max = toISO(today());
     refreshTaskDate(); fillHistory(); open('histSheet');
@@ -577,6 +615,7 @@
     if (busy) return;
     const t = findTask(histKey), date = $('taskDateInput').value;
     if (!t || t.settings.archived || !validDate(date) || date > toISO(today())) return;
+    if (t.list.some(e => e.date === date) && !confirm('За эту дату уже есть отметка. Добавить ещё одно выполнение?')) return;
     const entry = { id: uid(), name: t.name, date, created: Date.now() };
     entries.push(entry); if (!(await save())) return;
     render(); fillHistory();
@@ -656,15 +695,22 @@
     const t = findTask(histKey); if (!t) { close(); render(); return; }
     $('histTitle').textContent = t.name;
     $('markTaskControls').hidden = t.settings.archived;
+    refreshTaskDate();
     const stats = statistics(t.list);
     $('histStat').textContent = t.settings.archived ? 'В архиве · история сохранена' : 'История и статистика дела';
     $('intervalInput').value = t.settings.interval ?? '';
     $('archiveBtn').textContent = t.settings.archived ? 'Вернуть из архива' : 'В архив';
     renderInsights(t, stats);
+    let previousMonth = '';
+    const monthCounts = new Map();
+    t.list.forEach(e => { const m = e.date.slice(0, 7); monthCounts.set(m, (monthCounts.get(m) || 0) + 1); });
     $('histList').innerHTML = t.list.map(e => {
+      const month = e.date.slice(0, 7), count = monthCounts.get(month);
+      const heading = month !== previousMonth ? `<li class="history-month">${fromISO(e.date).toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })} · ${count} ${plural(count, 'выполнение', 'выполнения', 'выполнений')}</li>` : '';
+      previousMonth = month;
       const d = daysSince(e.date);
       const ago = d === 0 ? 'сегодня' : d === 1 ? 'вчера' : d > 0 ? `${d} ${plural(d, 'день', 'дня', 'дней')} назад` : '';
-      return `<li><span>${fmtDate(e.date)}<small>${ago}</small></span><div class="entry-actions"><button class="edit-entry" data-edit="${esc(e.id)}" aria-label="${esc('Изменить дату ' + fmtDate(e.date))}">Изменить</button><button class="del" data-id="${esc(e.id)}" aria-label="${esc('Удалить запись за ' + fmtDate(e.date))}">×</button></div></li>`;
+      return `${heading}<li><span>${fmtDate(e.date)}<small>${ago}</small></span><details class="entry-menu"><summary aria-label="${esc('Действия с записью за ' + fmtDate(e.date))}">⋯</summary><div class="entry-actions"><button class="edit-entry" data-edit="${esc(e.id)}" aria-label="${esc('Изменить дату ' + fmtDate(e.date))}">Изменить дату</button><button class="del" data-id="${esc(e.id)}" aria-label="${esc('Удалить запись за ' + fmtDate(e.date))}">Удалить</button></div></details></li>`;
     }).join('');
   }
   $('histList').addEventListener('click', async e => { if (busy) return;

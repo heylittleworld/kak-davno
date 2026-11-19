@@ -11,7 +11,7 @@ const source = html.match(/<script>([\s\S]*?)<\/script>/)[1];
 function app(initial = { entries: [] }, backend = null) {
   const nodes = new Map(), alerts = [], downloads = [];
   let stored = typeof initial === 'string' ? initial : JSON.stringify(initial);
-  let failWrite = false, nextPrompt = null;
+  let failWrite = false, nextPrompt = null, confirmed = true;
   const extraStorage = new Map(), session = new Map();
   const document = {
     body: { children: [], style: {}, classList: { add() {}, remove() {} }, append() {} }, activeElement: null,
@@ -39,7 +39,7 @@ function app(initial = { entries: [] }, backend = null) {
     ...(backend ? { KakDavnoCloud: { Client: class { constructor() { return backend; } }, decode: require('../cloud.js').decode } } : {}),
     sessionStorage: { getItem: key => session.get(key) || null, setItem: (key, value) => session.set(key, value) },
     localStorage: { getItem: key => key === 'kakdavno.v1' ? stored : extraStorage.get(key) || null, setItem: (key, value) => { if (failWrite) throw Error('Quota exceeded'); if (key === 'kakdavno.v1') stored = value; else extraStorage.set(key, value); } },
-    alert: message => alerts.push(message), confirm: () => true, prompt: () => nextPrompt,
+    alert: message => alerts.push(message), confirm: () => confirmed, prompt: () => nextPrompt,
     setTimeout: () => 1, clearTimeout() {},
   });
   const instrumented = source.replace(/\}\)\(\);\s*$/, `globalThis.api = {
@@ -55,6 +55,7 @@ function app(initial = { entries: [] }, backend = null) {
     stored: () => stored,
     failWrites: () => { failWrite = true; },
     prompt: value => { nextPrompt = value; },
+    confirm: value => { confirmed = value; },
     click: id => element(id).handlers.click({ target: element(id) }),
     login: () => element('loginForm').handlers.submit({ preventDefault() {} }),
     import: data => element('importFile').handlers.change({ target: { value: 'copy.json', files: [{ text: async () => JSON.stringify(data) }] } }),
@@ -377,4 +378,34 @@ test('карточка сохраняет прокрутку списка при
   assert.equal(a.bodyStyle.top, '');
   a.scroll(350); a.openHistory('полить цветы'); a.close();
   assert.equal(a.scrollY(), 350);
+});
+
+test('повторная отметка требует подтверждения, отмена возвращает состояние', async () => {
+  const a = app({ entries: [entry('a', '2024-01-01')] });
+  a.openHistory('полить цветы'); await a.click('markTaskBtn');
+  assert.equal(a.element('markTaskBtn').textContent, 'Отметить ещё раз');
+  assert.match(a.element('taskDateHint').textContent, /Отмечено сегодня/);
+  a.confirm(false); await a.click('markTaskBtn');
+  assert.equal(a.state().entries.length, 2);
+  await a.click('toastUndo');
+  assert.equal(a.element('markTaskBtn').textContent, 'Отметить это дело');
+});
+
+test('список сортируется по названию, давности и ближайшей дате', () => {
+  const a = app({ entries: [entry('a', '2024-01-01', 'Яблоня'), entry('b', '2024-01-05', 'Азалия')], taskSettings: { 'яблоня': { interval: 30 }, 'азалия': { interval: 1 } } });
+  const first = () => a.element('list').innerHTML.indexOf('data-key="яблоня"') < a.element('list').innerHTML.indexOf('data-key="азалия"');
+  a.element('sortTasks').value = 'oldest'; a.render(); assert.equal(first(), true);
+  a.element('sortTasks').value = 'name'; a.render(); assert.equal(first(), false);
+  a.element('sortTasks').value = 'next'; a.render(); assert.equal(first(), false);
+});
+
+test('история группируется по месяцам, статус сохранения отличает успех от ошибки', async () => {
+  const a = app({ entries: [entry('a', '2024-01-01'), entry('b', '2024-01-05'), entry('c', '2024-02-01')] });
+  a.openHistory('полить цветы');
+  assert.match(a.element('histList').innerHTML, /январь 2024.*2 выполнения/);
+  assert.match(a.element('histList').innerHTML, /февраль 2024.*1 выполнение/);
+  await a.click('markTaskBtn');
+  assert.match(a.element('taskSaveStatus').textContent, /Сохранено на этом устройстве/);
+  a.failWrites(); await a.click('markTaskBtn');
+  assert.match(a.element('taskSaveStatus').textContent, /Не удалось подтвердить/);
 });
