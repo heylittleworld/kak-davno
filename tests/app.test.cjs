@@ -43,7 +43,7 @@ function app(initial = { entries: [] }, backend = null) {
   });
   const instrumented = source.replace(/\}\)\(\);\s*$/, `globalThis.api = {
     validateData, statistics, agoParts, ageColor, dayNumber, toISO, today,
-    tasks, openAdd, openHistory, setView, render,
+    tasks, openAdd, openHistory, setView, render, nextTime,
     state: () => ({ entries, taskSettings, storageBlocked, mode, busy, cloudReady })
   }; })();`);
   vm.runInContext(instrumented, context);
@@ -333,4 +333,31 @@ test('резервная копия перед переносом содержи
   await a.click('localBackupBtn');
   assert.equal(a.downloads.length, 1);
   assert.equal(JSON.parse(await a.downloads[0].text()).entries[0].id, 'local');
+});
+
+test('следующая дата учитывает переход года и отличает оценку от расписания', () => {
+  const a = app({ entries: [entry('a', '2023-12-30')], taskSettings: { 'полить цветы': { interval: 3 } } });
+  assert.match(a.nextTime(a.tasks()[0]), /Следующий раз.*вт.*2 января 2024/);
+  const b = app({ entries: [entry('a', '2024-01-01'), entry('b', '2024-01-03'), entry('c', '2024-01-05')] });
+  assert.match(b.nextTime(b.tasks()[0]), /Ориентировочно.*7 января/);
+  const c = app({ entries: [entry('a', '2024-01-01')] });
+  assert.equal(c.nextTime(c.tasks()[0]), '');
+});
+
+test('мини-календарь переключает год, показывает повторы, график считает разные дни', () => {
+  const a = app({ entries: [entry('a', '2024-12-25'), entry('b', '2024-12-25'), entry('c', '2025-01-01'), entry('d', '2025-01-04')] });
+  a.openHistory('полить цветы');
+  const targetMonth = 2025 * 12;
+  let currentMonth = a.today().getFullYear() * 12 + a.today().getMonth();
+  while (currentMonth !== targetMonth) {
+    const step = currentMonth > targetMonth ? -1 : 1;
+    a.element('taskStats').handlers.click({ target: { closest: () => ({ dataset: { month: String(step) } }) } });
+    currentMonth += step;
+  }
+  assert.match(a.element('taskStats').innerHTML, /январь 2025/);
+  assert.match(a.element('taskStats').innerHTML, /7 дн. после предыдущего выполнения/);
+  assert.match(a.element('taskStats').innerHTML, /3 дн. после предыдущего выполнения/);
+  a.element('taskStats').handlers.click({ target: { closest: () => ({ dataset: { month: '-1' } }) } });
+  assert.match(a.element('taskStats').innerHTML, /декабрь 2024/);
+  assert.match(a.element('taskStats').innerHTML, /×2/);
 });

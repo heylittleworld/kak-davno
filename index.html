@@ -134,14 +134,18 @@
   button:focus-visible, input:focus-visible, select:focus-visible { outline: 3px solid var(--accent); outline-offset: 3px; }
   button.card-main { text-align: left; padding: 0; }
   .sheet-close { float: right; font-size: 24px; padding: 0 8px; }
-  .stats-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin: 12px 0; }
-  .metric { background: var(--card); border: 1px solid var(--line); border-radius: 12px; padding: 12px; }
-  .metric b { display: block; font-size: 20px; }
-  .metric span { color: var(--muted); font-size: 13px; }
-  .chart { margin: 12px 0 18px; }
-  .chart-row { display: grid; grid-template-columns: 70px 1fr 30px; gap: 8px; align-items: center; margin: 8px 0; font-size: 13px; }
-  .bar-track { background: var(--line); border-radius: 4px; height: 16px; }
-  .bar { background: var(--accent); border-radius: 4px; height: 100%; }
+  .insight { background: var(--card); border: 1px solid var(--line); border-radius: 16px; padding: 16px; margin: 14px 0; }
+  .insight h3 { margin: 0 0 10px; font-size: 16px; }
+  .insight p { margin: 6px 0; line-height: 1.5; font-size: 14px; }
+  .insight small { color: #72685f; }
+  .mini-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .mini-top button { width: 44px; height: 44px; border-radius: 12px; border: 1px solid var(--line); }
+  .mini-grid { display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); gap: 4px; text-align: center; margin: 10px 0; }
+  .mini-grid > span { min-height: 32px; display: flex; align-items: center; justify-content: center; font-size: 13px; border-radius: 10px; position: relative; }
+  .mini-grid .marked { background: #e5eddf; color: #35532f; font-weight: 600; }
+  .mini-grid .mini-today { outline: 1px solid var(--accent); outline-offset: -1px; }
+  .mini-grid sup { font-size: 9px; margin-left: 2px; }
+  .rhythm { display: block; width: 100%; height: auto; color: #72685f; }
   .entry-actions { display: flex; gap: 4px; }
   .edit-entry { font-size: 13px; color: var(--accent); padding: 8px; }
   .hist li > span { overflow-wrap: anywhere; min-width: 0; }
@@ -417,7 +421,7 @@
       const [big, small] = agoParts(d);
       const n = t.list.length;
       const interval = t.settings.interval;
-      const schedule = interval ? (d < interval ? `до следующего раза ${interval - d} дн.` : d === interval ? 'пора повторить' : `на ${d - interval} дн. позже интервала`) : '';
+      const schedule = t.settings.archived ? '' : nextTime(t);
       return `<div class="card" style="--c:${ageColor(d, interval)}" data-key="${esc(t.key)}">
         <button class="card-main" data-open aria-label="${esc('История и статистика: ' + t.name)}">
           <p class="card-name">${esc(t.name)}</p>
@@ -540,7 +544,9 @@
     $('markTaskBtn').disabled = !validDate(date) || date > toISO(today());
     $('taskDateHint').textContent = date === toISO(today()) ? 'Сегодня · можно выбрать другую дату в календаре' : 'Выбери дату выполнения в календаре';
   }
+  let histMonth;
   function openHistory(key) {
+    histMonth = new Date(today().getFullYear(), today().getMonth(), 1);
     histKey = key;
     $('taskDateInput').value = toISO(today());
     $('taskDateInput').max = toISO(today());
@@ -572,6 +578,60 @@
     });
     return { days: dates.length, median, months, currentMonth: months[5].count };
   }
+  function nextTime(t) {
+    const stats = statistics(t.list);
+    const interval = t.settings.interval || (stats.days >= 3 ? Math.round(stats.median) : null);
+    if (!interval) return '';
+    const date = fromISO(t.last.date); date.setDate(date.getDate() + interval);
+    const iso = toISO(date), remaining = dayNumber(iso) - dayNumber(toISO(today()));
+    const label = t.settings.interval ? 'Следующий раз' : 'Ориентировочно';
+    const when = date.toLocaleDateString('ru-RU', { day: 'numeric', month: 'long', weekday: 'short', ...(date.getFullYear() !== today().getFullYear() ? { year: 'numeric' } : {}) });
+    return `${label} — ${when} · ${remaining > 0 ? `через ${remaining} ${plural(remaining, 'день', 'дня', 'дней')}` : remaining === 0 ? 'сегодня' : `${Math.abs(remaining)} ${plural(remaining, 'день', 'дня', 'дней')} назад`}`;
+  }
+  function renderInsights(t, stats = statistics(t.list)) {
+    const dates = [...new Set(t.list.map(e => e.date))].sort();
+    const gaps = dates.slice(1).map((date, i) => ({ date, days: dayNumber(date) - dayNumber(dates[i]) })).slice(-6);
+    const month = histMonth || new Date(today().getFullYear(), today().getMonth(), 1);
+    const year = month.getFullYear(), m = month.getMonth();
+    const counts = new Map();
+    for (const e of t.list) counts.set(e.date, (counts.get(e.date) || 0) + 1);
+    let cells = ['Пн', 'Вт', 'Ср', 'Чт', 'Пт', 'Сб', 'Вс'].map(day => `<span aria-hidden="true">${day}</span>`).join('');
+    cells += '<span aria-hidden="true"></span>'.repeat((month.getDay() + 6) % 7);
+    for (let day = 1; day <= new Date(year, m + 1, 0).getDate(); day++) {
+      const iso = toISO(new Date(year, m, day)), count = counts.get(iso) || 0;
+      cells += `<span class="${count ? 'marked' : ''} ${iso === toISO(today()) ? 'mini-today' : ''}" aria-label="${esc(`${fmtDate(iso)}: ${count} ${plural(count, 'выполнение', 'выполнения', 'выполнений')}`)}">${day}${count > 1 ? `<sup>×${count}</sup>` : ''}</span>`;
+    }
+    let graph = '<p>График появится после выполнений хотя бы в три разных дня.</p>';
+    if (gaps.length >= 2) {
+      const max = Math.max(...gaps.map(g => g.days), t.settings.interval || 0, 1);
+      const x = i => 36 + i * 268 / (gaps.length - 1), y = n => 130 - n / max * 90;
+      const points = gaps.map((g, i) => `${x(i)},${y(g.days)}`).join(' ');
+      const description = gaps.map(g => `${fmtDate(g.date)}: ${g.days} дн. после предыдущего выполнения`).join('; ');
+      const target = t.settings.interval;
+      graph = `<svg class="rhythm" viewBox="0 0 340 180" role="img" aria-label="${esc(description)}">
+        <path d="M36 40H304 M36 85H304 M36 130H304" stroke="var(--line)" fill="none"/>
+        <text x="2" y="44" font-size="10" fill="currentColor">${max}</text><text x="12" y="134" font-size="10" fill="currentColor">0</text>
+        ${target ? `<path d="M36 ${y(target)}H304" stroke="var(--fresh)" stroke-dasharray="5 4" fill="none"/>` : ''}
+        <polyline points="${points}" fill="none" stroke="var(--accent)" stroke-width="2.5" stroke-linejoin="round"/>
+        ${gaps.map((g, i) => `<circle cx="${x(i)}" cy="${y(g.days)}" r="4" fill="var(--card)" stroke="var(--accent)" stroke-width="2"/><text x="${x(i)}" y="${y(g.days) - 10}" text-anchor="middle" font-size="12" fill="var(--ink)">${g.days}</text><text x="${x(i)}" y="153" text-anchor="middle" font-size="10" fill="currentColor">${fromISO(g.date).getDate()}.${pad(fromISO(g.date).getMonth() + 1)}</text>`).join('')}
+      </svg><p><small>Точки — число дней между выполнениями. Внизу — даты отметок. Выше точка — длиннее перерыв.${target ? ` Зелёный пунктир — твой интервал: ${target} дн.` : ''}</small></p>`;
+    }
+    $('taskStats').innerHTML = `<section class="insight"><h3>Твой ритм</h3>
+      <p>${stats.days >= 3 ? `Обычно раз в <b>${stats.median.toLocaleString('ru')} дн.</b>` : 'Для обычного ритма пока мало данных — нужны отметки в три разных дня.'}</p>
+      <p>Последний раз — <b>${fmtDate(t.last.date)}</b></p>
+      <p>В этом месяце — <b>${stats.currentMonth}</b> ${plural(stats.currentMonth, 'выполнение', 'выполнения', 'выполнений')} · всего ${t.list.length}</p>
+      ${t.settings.archived || !nextTime(t) ? '' : `<p><small>${esc(nextTime(t))}</small></p>`}</section>
+      <section class="insight"><div class="mini-top"><button data-month="-1" aria-label="Предыдущий месяц отметок">‹</button><b aria-live="polite">${month.toLocaleDateString('ru-RU', { month: 'long', year: 'numeric' })}</b><button data-month="1" aria-label="Следующий месяц отметок">›</button></div>
+      <div class="mini-grid">${cells}</div><small>Зелёным — дни выполнения · контур — сегодня</small></section>
+      <section class="insight"><h3>Промежутки между выполнениями</h3><p><small>Последние 6 промежутков · в днях</small></p>${graph}</section>`;
+  }
+  $('taskStats').addEventListener('click', e => {
+    const button = e.target.closest('[data-month]'); if (!button) return;
+    const t = findTask(histKey); if (!t) return;
+    histMonth = new Date(histMonth.getFullYear(), histMonth.getMonth() + Number(button.dataset.month), 1);
+    renderInsights(t);
+    $('taskStats').querySelector(`[data-month="${button.dataset.month}"]`).focus();
+  });
   function fillHistory() {
     const t = findTask(histKey); if (!t) { close(); render(); return; }
     $('histTitle').textContent = t.name;
@@ -580,14 +640,7 @@
     $('histStat').textContent = t.settings.archived ? 'В архиве · история сохранена' : 'История и статистика дела';
     $('intervalInput').value = t.settings.interval ?? '';
     $('archiveBtn').textContent = t.settings.archived ? 'Вернуть из архива' : 'В архив';
-    const maxCount = Math.max(1, ...stats.months.map(m => m.count));
-    $('taskStats').innerHTML = `<div class="stats-grid">
-      <div class="metric"><b>${t.list.length}</b><span>выполнений за всё время</span></div>
-      <div class="metric"><b>${stats.days}</b><span>дней активности</span></div>
-      <div class="metric"><b>${stats.currentMonth}</b><span>выполнений в этом месяце</span></div>
-      <div class="metric"><b>${stats.days < 3 ? '—' : stats.median.toLocaleString('ru') + ' дн.'}</b><span>типичный интервал</span></div>
-    </div><div class="hint">${stats.days < 3 ? 'Для типичного интервала пока мало данных: нужно хотя бы три разных дня выполнения. ' : ''}Интервал — медиана промежутков между днями выполнения. Несколько отметок за день считаются отдельными выполнениями.</div>
-    <h3>Выполнения за 6 месяцев</h3><div class="chart" role="img" aria-label="${esc(stats.months.map(m => m.label + ': ' + m.count).join('; '))}">${stats.months.map(m => `<div class="chart-row" aria-hidden="true"><span>${m.label}</span><div class="bar-track"><div class="bar" style="width:${m.count / maxCount * 100}%"></div></div><b>${m.count}</b></div>`).join('')}</div>`;
+    renderInsights(t, stats);
     $('histList').innerHTML = t.list.map(e => {
       const d = daysSince(e.date);
       const ago = d === 0 ? 'сегодня' : d === 1 ? 'вчера' : d > 0 ? `${d} ${plural(d, 'день', 'дня', 'дней')} назад` : '';
