@@ -779,7 +779,7 @@
     $('importBtn').disabled = busy || mode === 'cloud' && !cloudReady;
     $('confirmMigrationBtn').disabled = busy || !$('backupConfirmed').checked || !cloudReady;
   }
-  function rememberMode() { try { sessionStorage.setItem('kakdavno.mode', mode); } catch {} }
+  function rememberMode() { try { localStorage.setItem('kakdavno.mode', mode); } catch {} }
   function clearUndo() { undoFn = null; $('toast').classList.remove('show'); $('toast').inert = true; }
   function applyCloud(result) {
     const checked = validateData(KakDavnoCloud.decode(result));
@@ -947,7 +947,7 @@
   render();
   async function initializeCloud() {
     if (!cloud?.configured) return;
-    let preferred = 'local'; try { preferred = sessionStorage.getItem('kakdavno.mode') || 'local'; } catch {}
+    let preferred = 'local'; try { preferred = localStorage.getItem('kakdavno.mode') || 'local'; } catch {}
     const signedIn = cloud.restoreSession();
     if (preferred === 'cloud' || signedIn) {
       enterCloud(); render();

@@ -76,3 +76,56 @@ test('кодирование сохраняет ID дела, архив и по�
   assert.deepEqual(decoded.entries, data.entries);
   assert.deepEqual(decoded.taskSettings['дело'], data.taskSettings['дело']);
 });
+
+test('новый запуск использует постоянное хранилище, а не сессию вкладки', async () => {
+  const vm = require('node:vm');
+  const source = require('node:fs').readFileSync(require('node:path').join(__dirname, '..', 'cloud.js'), 'utf8');
+  const persistent = storage();
+  function launch() {
+    const box = { localStorage: persistent, sessionStorage: storage(), fetch: async () => response(session), AbortController, setTimeout, clearTimeout };
+    vm.runInNewContext(source, box);
+    return new box.KakDavnoCloud.Client(config);
+  }
+  const first = launch(); await first.signIn('test@example.com', 'fake-password');
+  const reopened = launch();
+  assert.equal(reopened.restoreSession(), true);
+  assert.equal(reopened.session.user.id, 'test-user');
+  await reopened.signOut();
+  assert.equal(launch().restoreSession(), false);
+});
+
+function locks() {
+  let tail = Promise.resolve();
+  return { request(name, action) { const next = tail.then(action); tail = next.catch(() => {}); return next; } };
+}
+
+test('две вкладки обновляют общий токен один раз и замечают выход', async () => {
+  const cache = storage(), sharedLocks = locks();
+  let refreshes = 0;
+  const options = { storage: cache, locks: sharedLocks, fetch: async url => {
+    if (url.includes('refresh_token')) { refreshes++; return response({ ...session, access_token: 'fresh', refresh_token: 'rotated' }); }
+    return response({});
+  } };
+  const a = new Client(config, options), b = new Client(config, options);
+  a.storeSession({ ...session, expires_in: -1 }); b.restoreSession();
+  await Promise.all([a.load(), b.load()]);
+  assert.equal(refreshes, 1);
+  assert.equal(b.session.refresh_token, 'rotated');
+  await a.signOut();
+  await assert.rejects(b.load(), error => error.code === 'AUTH');
+  assert.equal(b.signedIn, false);
+});
+
+test('потеря сети при обновлении не стирает вход и допускает повторную загрузку', async () => {
+  const cache = storage(); let offline = true;
+  const c = new Client(config, { storage: cache, fetch: async url => {
+    if (offline) throw Error('offline');
+    return response(url.includes('refresh_token') ? session : {});
+  } });
+  c.storeSession({ ...session, expires_in: -1 });
+  await assert.rejects(c.load(), error => error.code === 'NETWORK');
+  assert.equal(c.signedIn, true);
+  assert.notEqual(cache.getItem(c.sessionKey), null);
+  offline = false; await c.load();
+  assert.equal(c.signedIn, true);
+});

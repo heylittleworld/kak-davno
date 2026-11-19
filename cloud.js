@@ -38,7 +38,9 @@
       this.config = config || {};
       this.fetch = options.fetch || globalThis.fetch.bind(globalThis);
       this.storage = options.storage;
-      if (!this.storage) { try { this.storage = globalThis.sessionStorage; } catch {} }
+      if (!this.storage) { try { this.storage = globalThis.localStorage; } catch {} }
+      this.locks = options.locks || globalThis.navigator?.locks;
+      this.memoryOnly = false;
       this.session = null;
       this.sessionKey = 'kakdavno.auth.' + this.config.url;
       this.refreshing = null;
@@ -48,16 +50,20 @@
     storeSession(data) {
       if (!data || typeof data.access_token !== 'string' || typeof data.refresh_token !== 'string' || !data.user?.id || !Number.isFinite(data.expires_in)) throw new CloudError('Не удалось прочитать ответ входа.', 'AUTH');
       this.session = { access_token: data.access_token, refresh_token: data.refresh_token, user: { id: data.user.id }, expires_at: Date.now() + data.expires_in * 1000 };
-      try { this.storage?.setItem(this.sessionKey, JSON.stringify(this.session)); } catch { /* Сессия останется в памяти до перезагрузки. */ }
+      try { this.storage?.setItem(this.sessionKey, JSON.stringify(this.session)); }
+      catch { this.memoryOnly = true; /* Если хранилище недоступно, вход живёт в памяти. */ }
     }
     forget() { this.session = null; try { this.storage?.removeItem(this.sessionKey); } catch {} }
     restoreSession() {
       if (!this.configured) return false;
       try {
         const saved = JSON.parse(this.storage?.getItem(this.sessionKey) || 'null');
-        if (saved && typeof saved.access_token === 'string' && typeof saved.refresh_token === 'string' && saved.user?.id && Number.isFinite(saved.expires_at)) this.session = saved;
-      } catch { this.forget(); }
+        if (this.storage && !this.memoryOnly) this.session = saved && typeof saved.access_token === 'string' && typeof saved.refresh_token === 'string' && saved.user?.id && Number.isFinite(saved.expires_at) ? saved : null;
+      } catch { /* Временная недоступность хранилища не завершает текущий вход. */ }
       return this.signedIn;
+    }
+    withSessionLock(action) {
+      return this.locks ? this.locks.request(this.sessionKey, action) : action();
     }
     async request(path, body, token) {
       if (!this.configured) throw new CloudError('Сначала настрой отдельный проект по инструкции SUPABASE.md.', 'CONFIG');
@@ -81,27 +87,33 @@
       } finally { clearTimeout(timer); }
     }
     async signIn(email, password) {
-      this.forget();
-      this.storeSession(await this.request('/auth/v1/token?grant_type=password', { email, password }));
+      return this.withSessionLock(async () => {
+        this.forget();
+        this.storeSession(await this.request('/auth/v1/token?grant_type=password', { email, password }));
+      });
     }
-    async token() {
+    async currentToken() {
+      this.restoreSession();
       if (!this.session) throw new CloudError('Войди в личный аккаунт.', 'AUTH');
       if (this.session.expires_at <= Date.now() + 60000) {
-        if (!this.refreshing) this.refreshing = (async () => {
-          try { this.storeSession(await this.request('/auth/v1/token?grant_type=refresh_token', { refresh_token: this.session.refresh_token })); }
-          catch (error) { if (error.code === 'AUTH') this.forget(); throw error; }
-          finally { this.refreshing = null; }
-        })();
-        await this.refreshing;
+        try { this.storeSession(await this.request('/auth/v1/token?grant_type=refresh_token', { refresh_token: this.session.refresh_token })); }
+        catch (error) { if (error.code === 'AUTH') this.forget(); throw error; }
       }
       return this.session.access_token;
+    }
+    async token() {
+      if (!this.refreshing) this.refreshing = Promise.resolve().then(() => this.withSessionLock(() => this.currentToken())).finally(() => { this.refreshing = null; });
+      return this.refreshing;
     }
     async rpc(name, body = {}) { return this.request('/rest/v1/rpc/' + name, body, await this.token()); }
     load() { return this.rpc('kd_load'); }
     save(data, revision, importId = null) { return this.rpc('kd_save', { p_data: encode(data), p_revision: revision, p_import_id: importId }); }
     async signOut() {
-      try { if (this.session) await this.request('/auth/v1/logout?scope=local', {}, await this.token()); }
-      finally { this.forget(); }
+      return this.withSessionLock(async () => {
+        this.restoreSession();
+        try { if (this.session) await this.request('/auth/v1/logout?scope=local', {}, await this.currentToken()); }
+        finally { this.forget(); }
+      });
     }
   }
   const api = { Client, CloudError, encode, decode };
